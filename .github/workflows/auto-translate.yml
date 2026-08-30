@@ -10,29 +10,28 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout repository
+      - name: 1. Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: 2. Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Run Auto Translation Script
+      - name: 3. Run Gemma 4 31B Auto Translation
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           python3 scripts/auto_translate.py
 
-      - name: Commit and Push Translated Keys
+      - name: 4. Commit and Push Translated Dictionary
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add languages/zh-CN.json
-          if git commit -m "chore(i18n): auto-translate missing locale keys [skip ci]"; then
+          if git commit -m "chore(i18n): auto-translate missing keys via gemma-4-31b-it [skip ci]"; then
             git push
-            echo "✅ 字典已自动提交更新并推送至 main 分支！"
+            echo "✅ 字典已成功更新并推送到 main 分支！"
           else
-            echo "没有需要提交的新改动"
+            echo "没有需要提交的新词条"
           fi
