@@ -9,19 +9,9 @@ import urllib.error
 EN_URL = "https://raw.githubusercontent.com/n8n-io/n8n/master/packages/frontend/@n8n/i18n/src/locales/en.json"
 ZH_FILE = "languages/zh-CN.json"
 
-# 统一术语约束
+# 精简版术语表，降低 Prompt Token 消耗
 GLOSSARY_PROMPT = """
-【统一术语规则】:
-- Workflow -> 工作流
-- Node -> 节点
-- Credentials -> 凭据
-- Execution -> 执行 / 运行
-- Trigger -> 触发器
-- Canvas -> 画布
-- Pin Data -> 固定数据
-- Expression -> 表达式
-- Insights -> 数据洞察
-- Webhook/API/JSON/HTTP -> 保留大写专有名词，不进行翻译
+【术语规范】: Workflow->工作流, Node->节点, Credentials->凭据, Execution->执行, Trigger->触发器, Canvas->画布, Pin Data->固定数据, Expression->表达式, Insights->数据洞察, 保留大写专有名词(Webhook/API/JSON/HTTP)。
 """
 
 def fetch_official_en():
@@ -31,20 +21,17 @@ def fetch_official_en():
         return json.loads(resp.read().decode("utf-8"))
 
 def batch_refactor_ai(batch_items, api_key, api_base, model):
-    prompt = f"""你是一个专业的前端本地化与文案润色专家。请对以下 n8n 自动化工作流软件的前端词条进行【深度校对与重构翻译】。
-
-待校对数据格式为：
-"Key": {{ "en": "英文原句", "current": "当前中文" }}
+    prompt = f"""你是一个专业的前端本地化与文案润色专家。请对以下 n8n 自动化软件的前端词条进行【深度校对与重构翻译】。
+输入格式: "Key": {{"en": "英文", "zh": "当前中文"}}
 
 {GLOSSARY_PROMPT}
 
-【校对要求】:
-1. 严禁丢失或修改任何占位符！如 {{time}}、{{name}}、{{count}}、{0}、HTML标签 <b> 等必须100%原样保留。
-2. 消除生硬的机翻腔，使其符合中国开发者的软件交互习惯。
-3. 如果现有翻译已十分准确且符合术语，予以保留；若存在语病、术语冲突或直译，进行重新翻译润色。
-4. 返回格式必须为纯 JSON 字典格式: {{ "Key": "校对后的中文" }}，严禁包含任何 Markdown 格式或多余文字。
+【要求】:
+1. 严禁修改或遗漏变量占位符(如 {{time}}, {{name}}, {{count}}, {{0}}, <b> 等必须100%保留)。
+2. 消除生硬机翻，符合中文开发者使用习惯；若原翻译已准确且符合术语则保留，若存在语病则重新润色。
+3. 严格返回纯 JSON 字典: {{ "Key": "润色后中文" }}，不要输出任何 Markdown 或解释。
 
-待校对数据:
+数据:
 {json.dumps(batch_items, ensure_ascii=False)}
 """
     data = json.dumps({
@@ -85,7 +72,7 @@ def main():
 
     all_keys = list(en_data.keys())
     total_count = len(all_keys)
-    print(f"📊 官方基准有效词条: {total_count} 项，准备启动全量校对重构...", flush=True)
+    print(f"📊 官方有效基准词条: {total_count} 项，启动全量校对重构...", flush=True)
 
     gemini_key = os.getenv("GEMINI_API_KEY")
     deepseek_key = os.getenv("DEEPSEEK_API_KEY")
@@ -95,7 +82,7 @@ def main():
         api_key = gemini_key
         api_base = "https://generativelanguage.googleapis.com/v1beta/openai"
         model = "gemini-flash-lite-latest"
-        print(f"🌟 使用 Google AI 官方主力模型: {model}", flush=True)
+        print(f"🌟 使用 Google AI Studio 官方模型: {model}", flush=True)
     elif deepseek_key:
         api_key = deepseek_key
         api_base = "https://api.deepseek.com/v1"
@@ -107,13 +94,13 @@ def main():
         model = "gpt-4o-mini"
         print(f"🌟 使用 OpenAI: {model}", flush=True)
     else:
-        print("❌ 未检测到 API_KEY 环境变量！", flush=True)
+        print("❌ 未检测到 API_KEY！", flush=True)
         sys.exit(1)
 
-    # 批次设为 100 条
-    batch_size = 100
+    # 💡 优化：单批从 100 调整为 50 条，大幅降低单次 Token 峰值，杜绝 429
+    batch_size = 50
     total_batches = (total_count + batch_size - 1) // batch_size
-    print(f"🚀 开始全量逐批校对 (共 {total_batches} 批，已启用 15 RPM 速率保护)...", flush=True)
+    print(f"🚀 开始逐批校对 (共 {total_batches} 批，每批 {batch_size} 条)...", flush=True)
 
     refactored_data = dict(zh_data)
     success_count = 0
@@ -122,11 +109,12 @@ def main():
         batch_keys = all_keys[i:i + batch_size]
         batch_idx = i // batch_size + 1
         
+        # 紧凑型结构
         batch_payload = {}
         for k in batch_keys:
             batch_payload[k] = {
                 "en": en_data[k],
-                "current": zh_data.get(k, "")
+                "zh": zh_data.get(k, "")
             }
 
         print(f"  -> [批次 {batch_idx}/{total_batches}] 正在校对润色 {len(batch_payload)} 个词条...", flush=True)
@@ -138,22 +126,21 @@ def main():
                 success_count += len(polished_chunk)
                 print(f"     ✅ 批次 {batch_idx} 校对完成 ({len(polished_chunk)} 项)", flush=True)
                 
-                # 增量实时写回，防止任何断电丢失
+                # 增量实时写回磁盘
                 with open(ZH_FILE, "w", encoding="utf-8") as f:
                     json.dump(refactored_data, f, ensure_ascii=False, indent=2)
 
-                # 💡 核心控速：成功后固定休眠 4.5 秒，严格保持在 13 RPM，绝不触发 429
-                time.sleep(4.5)
+                # 控速：每批完成后休眠 4 秒
+                time.sleep(4.0)
                 break
             except Exception as e:
-                # 遇到 429 异常时进行阶梯式休眠等待配额刷新
                 wait_time = 15 * attempt
                 print(f"     ⚠️ 批次 {batch_idx} 第 {attempt} 次遇到限流或异常: {e}，等待 {wait_time} 秒后重试...", flush=True)
                 time.sleep(wait_time)
                 if attempt == 4:
-                    print(f"     ❌ 批次 {batch_idx} 重试达上限，跳过保留原样", flush=True)
+                    print(f"     ❌ 批次 {batch_idx} 跳过，保留当前翻译", flush=True)
 
-    print(f"\n🎉 全量校对完成！共重构校对词条: {success_count}/{total_count} 项！", flush=True)
+    print(f"\n🎉 全量校对完成！共重构校对: {success_count}/{total_count} 项！", flush=True)
 
 if __name__ == "__main__":
     main()
