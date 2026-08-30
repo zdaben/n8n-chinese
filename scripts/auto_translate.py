@@ -19,11 +19,11 @@ def fetch_official_en():
     with urllib.request.urlopen(req) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
-def batch_translate_ai(texts_dict, api_key, api_base="https://api.deepseek.com/v1", model="deepseek-chat"):
+def batch_translate_ai(texts_dict, api_key, api_base, model):
     prompt = f"""你是一个专业的前端国际化翻译助手。请将以下 n8n 工作流软件的前端 JSON 英文词条翻译成简体中文。
 要求：
 1. 严禁修改或遗漏任何变量占位符，如 {{time}}、{{name}}、{{count}}、{{0}} 等必须原样保留。
-2. 保持专业术语（Workflow -> 工作流，Node -> 节点，Credential -> 凭据，Execution -> 执行，Canvas -> 画布）。
+2. 保持专业术语（Workflow -> 工作流，Node -> 节点，Credential -> 凭据，Execution -> 执行，Canvas -> 画布，Insights -> 洞察与指标，Settings -> 设置）。
 3. 只返回严格合法的 JSON 格式字典，不要输出任何 Markdown 标记或多余文字。
 
 待翻译 JSON:
@@ -36,7 +36,7 @@ def batch_translate_ai(texts_dict, api_key, api_base="https://api.deepseek.com/v
     }).encode("utf-8")
 
     req = urllib.request.Request(
-        f"{api_base}/chat/completions",
+        f"{api_base.rstrip('/')}/chat/completions",
         data=data,
         headers={
             "Content-Type": "application/json",
@@ -47,8 +47,11 @@ def batch_translate_ai(texts_dict, api_key, api_base="https://api.deepseek.com/v
     with urllib.request.urlopen(req) as resp:
         res = json.loads(resp.read().decode("utf-8"))
         content = res["choices"][0]["message"]["content"].strip()
+        # 清理可能附带的 Markdown 代码块标记
         if content.startswith("```json"):
             content = content[7:]
+        elif content.startswith("```"):
+            content = content[3:]
         if content.endswith("```"):
             content = content[:-3]
         return json.loads(content.strip())
@@ -64,53 +67,62 @@ def main():
     en_data = fetch_official_en()
     missing = {k: en_data[k] for k in en_data if k not in zh_data}
 
-    print(f"📊 官方词条总数: {len(en_data)} | 本地已有: {len(zh_data)}")
-    print(f"🔍 待补全缺失词条: {len(missing)}")
+    print(f"📊 官方有效词条: {len(en_data)} | 本地已有: {len(zh_data)}")
+    print(f"🔍 待翻译缺失词条: {len(missing)}")
 
     if not missing:
         print("🎉 恭喜！当前翻译覆盖率已是 100%！")
         return
 
-    api_key = os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if api_key:
-        api_base = "https://api.deepseek.com/v1" if os.getenv("DEEPSEEK_API_KEY") else "https://api.openai.com/v1"
-        model = "deepseek-chat" if os.getenv("DEEPSEEK_API_KEY") else "gpt-4o-mini"
-        
-        # 按每批 100 条切片翻译，防止 Token 超限
-        items = list(missing.items())
-        batch_size = 100
-        total_batches = (len(items) + batch_size - 1) // batch_size
-        
-        print(f"🤖 开始调用 AI 分批翻译 (共 {total_batches} 批)...")
-        for i in range(0, len(items), batch_size):
-            chunk = dict(items[i:i + batch_size])
-            print(f"  -> 正在翻译第 {i//batch_size + 1}/{total_batches} 批...")
-            try:
-                translated_chunk = batch_translate_ai(chunk, api_key, api_base, model)
-                zh_data.update(translated_chunk)
-            except Exception as e:
-                print(f"  ⚠️ 本批翻译遇到异常: {e}，跳过保留英文")
-    else:
-        # 兜底内置高频菜单
-        common_patches = {
-            "workflow.editDescriptionAndTags": "编辑描述与标签",
-            "workflow.exportJson": "导出 JSON",
-            "workflow.import": "导入",
-            "workflow.versionHistory": "版本历史",
-            "workflow.productionChecklist": "投产就绪检查",
-            "workflow.settings": "工作流设置",
-            "generic.insights": "洞察与指标",
-            "sidebar.insights": "数据洞察",
-            "nodeView.editDescription": "编辑描述",
-            "nodeView.openDetails": "打开详情"
-        }
-        zh_data.update(common_patches)
-        print("⚠️ 未配置 API_KEY，已自动写入高频菜单补丁！")
+    # 1. 优先读取 GEMINI_API_KEY，使用 Gemma 4 31B 模型
+    gemini_key = os.getenv("GEMINI_API_KEY")
+    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
+    openai_key = os.getenv("OPENAI_API_KEY")
 
+    if gemini_key:
+        api_key = gemini_key
+        # Google AI Studio 官方 OpenAI 兼容接口
+        api_base = "https://generativelanguage.googleapis.com/v1beta/openai"
+        model = "gemma-4-31b-it"  # Gemma 4 31B 指令微调模型
+        print(f"🌟 检测到 GEMINI_API_KEY，使用模型: {model}")
+    elif deepseek_key:
+        api_key = deepseek_key
+        api_base = "https://api.deepseek.com/v1"
+        model = "deepseek-chat"
+        print(f"🌟 检测到 DEEPSEEK_API_KEY，使用模型: {model}")
+    elif openai_key:
+        api_key = openai_key
+        api_base = "https://api.openai.com/v1"
+        model = "gpt-4o-mini"
+        print(f"🌟 检测到 OPENAI_API_KEY，使用模型: {model}")
+    else:
+        print("❌ 未检测到 GEMINI_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY！")
+        sys.exit(1)
+
+    # 按每批 80 条切片分批调用，防止单次 Token 超出限制
+    items = list(missing.items())
+    batch_size = 80
+    total_batches = (len(items) + batch_size - 1) // batch_size
+    
+    print(f"🤖 开始调用 {model} 进行分批翻译 (共 {total_batches} 批)...")
+    success_count = 0
+
+    for i in range(0, len(items), batch_size):
+        chunk = dict(items[i:i + batch_size])
+        batch_idx = i // batch_size + 1
+        print(f"  -> [批次 {batch_idx}/{total_batches}] 正在翻译 {len(chunk)} 个词条...")
+        try:
+            translated_chunk = batch_translate_ai(chunk, api_key, api_base, model)
+            zh_data.update(translated_chunk)
+            success_count += len(translated_chunk)
+        except Exception as e:
+            print(f"  ⚠️ 批次 {batch_idx} 翻译异常: {e}，跳过该批保留官方英文")
+
+    # 写回 zh-CN.json
     with open(ZH_FILE, "w", encoding="utf-8") as f:
         json.dump(zh_data, f, ensure_ascii=False, indent=2)
 
-    print(f"💾 字典更新完成！当前有效词条: {len(zh_data)}")
+    print(f"\n💾 字典更新完成！本次成功翻译新增: {success_count} 条，当前总词条数: {len(zh_data)}")
 
 if __name__ == "__main__":
     main()
