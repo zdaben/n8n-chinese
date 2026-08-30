@@ -31,10 +31,6 @@ def fetch_official_en():
         return json.loads(resp.read().decode("utf-8"))
 
 def batch_refactor_ai(batch_items, api_key, api_base, model):
-    """
-    接收对比数据: {"key": {"en": "...", "zh": "..."}}
-    由 AI 结合英文上下文与原中文进行润色、校对与术语对齐
-    """
     prompt = f"""你是一个专业的前端本地化与文案润色专家。请对以下 n8n 自动化工作流软件的前端词条进行【深度校对与重构翻译】。
 
 待校对数据格式为：
@@ -87,8 +83,7 @@ def main():
 
     en_data = fetch_official_en()
 
-    # 筛选待校对的目标（包含全部官方存在的词条）
-    all_keys = [k for k in en_data.keys()]
+    all_keys = list(en_data.keys())
     total_count = len(all_keys)
     print(f"📊 官方基准有效词条: {total_count} 项，准备启动全量校对重构...", flush=True)
 
@@ -99,8 +94,9 @@ def main():
     if gemini_key:
         api_key = gemini_key
         api_base = "https://generativelanguage.googleapis.com/v1beta/openai"
-        model = "gemini-2.0-flash-lite"
-        print(f"🌟 使用 Google Gemini 极速模型: {model}", flush=True)
+        # 使用官方兼容路由模型 gemini-flash-lite-latest
+        model = "gemini-flash-lite-latest"
+        print(f"🌟 使用 Google AI 官方模型: {model}", flush=True)
     elif deepseek_key:
         api_key = deepseek_key
         api_base = "https://api.deepseek.com/v1"
@@ -115,7 +111,6 @@ def main():
         print("❌ 未检测到 API_KEY 环境变量！", flush=True)
         sys.exit(1)
 
-    # 分批大小 (每批 100 条)
     batch_size = 100
     total_batches = (total_count + batch_size - 1) // batch_size
     print(f"🚀 开始全量逐批校对 (共 {total_batches} 批)...", flush=True)
@@ -127,7 +122,6 @@ def main():
         batch_keys = all_keys[i:i + batch_size]
         batch_idx = i // batch_size + 1
         
-        # 组装英文原文与当前中文对照包
         batch_payload = {}
         for k in batch_keys:
             batch_payload[k] = {
@@ -144,12 +138,12 @@ def main():
                 success_count += len(polished_chunk)
                 print(f"     ✅ 批次 {batch_idx} 校对完成 ({len(polished_chunk)} 项)", flush=True)
                 
-                # 每完成一批，立即增量写回磁盘，确保随时可中断且不丢进度
+                # 增量安全写入，支持随时中断续跑
                 with open(ZH_FILE, "w", encoding="utf-8") as f:
                     json.dump(refactored_data, f, ensure_ascii=False, indent=2)
                 break
             except Exception as e:
-                print(f"     ⚠️ 批次 {batch_idx} 第 {attempt} 次异常: {e}", flush=True)
+                print(f"     ⚠️ 批次 {batch_idx} 第 {attempt} 次重试异常: {e}", flush=True)
                 if attempt < 3:
                     time.sleep(2 * attempt)
                 else:
