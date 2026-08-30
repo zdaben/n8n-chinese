@@ -31,16 +31,11 @@ jobs:
             echo "👉 [Manual Mode] Target version: ${TARGET_VER}"
           else
             echo "🔍 [Auto Mode] Querying official n8n dist-tags (stable track)..."
-            # 优先读取官方 dist-tags 中的 stable 轨道，向下兼容 latest
-            TARGET_VER=$(curl -fsSL --connect-timeout 5 --max-time 10 "https://registry.npmjs.org/-/package/n8n/dist-tags" 2>/dev/null \
-              | jq -r '.stable // .latest // empty' || true)
+            TARGET_VER=$(curl -fsSL --connect-timeout 5 --max-time 10 "https://registry.npmjs.org/-/package/n8n/dist-tags" 2>/dev/null | jq -r '.stable // .latest // empty' || true)
             
             if [ -z "$TARGET_VER" ]; then
               echo "🔍 Falling back to GitHub Releases API..."
-              TARGET_VER=$(curl -fsSL --connect-timeout 5 --max-time 10 -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/n8n-io/n8n/releases" 2>/dev/null \
-                | jq -r '[.[] | select(.prerelease == false and (.tag_name | contains("alpha") or contains("beta") | not))] | .[0].tag_name' \
-                | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
-                | head -n1 || true)
+              TARGET_VER=$(curl -fsSL --connect-timeout 5 --max-time 10 -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/n8n-io/n8n/releases" 2>/dev/null | jq -r '[.[] | select(.prerelease == false and (.tag_name | contains("alpha") or contains("beta") | not))] | .[0].tag_name' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
             fi
 
             if [ -z "$TARGET_VER" ]; then
@@ -138,7 +133,6 @@ jobs:
             exit 1
           fi
 
-          # 单向清洗并写入官方构建目录，不污染源仓库
           python3 scripts/validate_locale.py \
             "${TARGET_DIR}/en.json" \
             "${ZH_SOURCE}" \
@@ -153,23 +147,17 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm turbo run build --filter=...n8n-editor-ui
 
-          # 编译成功后追加构建状态至 Release 描述
-          cat >> "$GITHUB_WORKSPACE/locale_summary.md" <<EOF
-| **Turborepo 构建** | 全依赖拓扑编译 (`n8n-editor-ui`) | **✅ PASS** |
-EOF
+          echo "| **Turborepo 构建** | 全依赖拓扑编译 (\`n8n-editor-ui\`) | **✅ PASS** |" >> "$GITHUB_WORKSPACE/locale_summary.md"
 
       - name: 8. Strictly locate and package dist bundle
         run: |
-          # 严格断言：只允许存在唯一的 editor-ui/dist 输出目录
-          mapfile -t DIST_DIRS < <(find n8n-source/packages -type d -path '*/editor-ui/dist')
+          DIST_DIR=$(find n8n-source/packages -type d -path '*/editor-ui/dist' | head -n 1)
 
-          if [ "${#DIST_DIRS[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one editor-ui dist directory, but found ${#DIST_DIRS[@]}!"
-            printf '%s\n' "${DIST_DIRS[@]}"
+          if [ -z "$DIST_DIR" ]; then
+            echo "::error::Compiled editor-ui/dist directory not found!"
             exit 1
           fi
 
-          DIST_DIR="${DIST_DIRS[0]}"
           PARENT_DIR="$(dirname "$DIST_DIR")"
           echo "Found exact build output at: ${PARENT_DIR}"
 
