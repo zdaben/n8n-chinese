@@ -7,6 +7,7 @@
 import json
 import os
 import sys
+import time
 import urllib.request
 import urllib.error
 
@@ -80,8 +81,9 @@ def main():
     if gemini_key:
         api_key = gemini_key
         api_base = "https://generativelanguage.googleapis.com/v1beta/openai"
-        model = "gemma-4-31b-it"
-        print(f"🌟 使用 Google AI Studio: {model}", flush=True)
+        # 使用 Google 官方高可用主力模型 gemini-flash-lite-latest
+        model = "gemini-flash-lite-latest"
+        print(f"🌟 使用 Google AI 官方模型: {model}", flush=True)
     elif deepseek_key:
         api_key = deepseek_key
         api_base = "https://api.deepseek.com/v1"
@@ -96,30 +98,38 @@ def main():
         print("❌ 未检测到任何 API_KEY！", flush=True)
         sys.exit(1)
 
-    # 批次提升至 150 条，大幅缩短总轮数
+    # 每批 100 条，兼顾速度与稳定性
     items = list(missing.items())
-    batch_size = 150
+    batch_size = 100
     total_batches = (len(items) + batch_size - 1) // batch_size
     
-    print(f"🤖 开始分批翻译 (共 {total_batches} 批，每批 {batch_size} 条)...", flush=True)
+    print(f"🤖 开始分批极速翻译 (共 {total_batches} 批，每批 {batch_size} 条)...", flush=True)
     success_count = 0
 
     for i in range(0, len(items), batch_size):
         chunk = dict(items[i:i + batch_size])
         batch_idx = i // batch_size + 1
         print(f"  -> [批次 {batch_idx}/{total_batches}] 正在翻译 {len(chunk)} 个词条...", flush=True)
-        try:
-            translated_chunk = batch_translate_ai(chunk, api_key, api_base, model)
-            zh_data.update(translated_chunk)
-            success_count += len(translated_chunk)
-            print(f"     ✅ 批次 {batch_idx} 完成，已翻译 {len(translated_chunk)} 条", flush=True)
-        except Exception as e:
-            print(f"     ⚠️ 批次 {batch_idx} 异常: {e}，跳过该批", flush=True)
+        
+        # 增加 3 次自动重试机制
+        for attempt in range(1, 4):
+            try:
+                translated_chunk = batch_translate_ai(chunk, api_key, api_base, model)
+                zh_data.update(translated_chunk)
+                success_count += len(translated_chunk)
+                print(f"     ✅ 批次 {batch_idx} 成功翻译 {len(translated_chunk)} 条", flush=True)
+                break
+            except Exception as e:
+                print(f"     ⚠️ 批次 {batch_idx} 第 {attempt} 次重试异常: {e}", flush=True)
+                if attempt < 3:
+                    time.sleep(2 * attempt)
+                else:
+                    print(f"     ❌ 批次 {batch_idx} 失败，跳过该批", flush=True)
 
     with open(ZH_FILE, "w", encoding="utf-8") as f:
         json.dump(zh_data, f, ensure_ascii=False, indent=2)
 
-    print(f"\n💾 字典更新完成！本次成功翻译: {success_count} 条，总词条数: {len(zh_data)}", flush=True)
+    print(f"\n💾 字典更新完成！本次成功翻译: {success_count} 条，总有效词条数: {len(zh_data)}", flush=True)
 
 if __name__ == "__main__":
     main()
