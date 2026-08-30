@@ -40,9 +40,9 @@ def batch_refactor_ai(batch_items, api_key, api_base, model):
 
 【校对要求】:
 1. 严禁丢失或修改任何占位符！如 {{time}}、{{name}}、{{count}}、{0}、HTML标签 <b> 等必须100%原样保留。
-2. 消除生硬的机翻腔，使其符合中国开发者的软件交互习惯（语句自然通顺、动词/名词专业）。
+2. 消除生硬的机翻腔，使其符合中国开发者的软件交互习惯。
 3. 如果现有翻译已十分准确且符合术语，予以保留；若存在语病、术语冲突或直译，进行重新翻译润色。
-4. 返回格式必须为纯 JSON 字典格式: {{ "Key": "校对后的中文" }}，严禁包含任何 Markdown 格式或额外说明文字。
+4. 返回格式必须为纯 JSON 字典格式: {{ "Key": "校对后的中文" }}，严禁包含任何 Markdown 格式或多余文字。
 
 待校对数据:
 {json.dumps(batch_items, ensure_ascii=False)}
@@ -94,9 +94,8 @@ def main():
     if gemini_key:
         api_key = gemini_key
         api_base = "https://generativelanguage.googleapis.com/v1beta/openai"
-        # 使用官方兼容路由模型 gemini-flash-lite-latest
         model = "gemini-flash-lite-latest"
-        print(f"🌟 使用 Google AI 官方模型: {model}", flush=True)
+        print(f"🌟 使用 Google AI 官方主力模型: {model}", flush=True)
     elif deepseek_key:
         api_key = deepseek_key
         api_base = "https://api.deepseek.com/v1"
@@ -111,9 +110,10 @@ def main():
         print("❌ 未检测到 API_KEY 环境变量！", flush=True)
         sys.exit(1)
 
+    # 批次设为 100 条
     batch_size = 100
     total_batches = (total_count + batch_size - 1) // batch_size
-    print(f"🚀 开始全量逐批校对 (共 {total_batches} 批)...", flush=True)
+    print(f"🚀 开始全量逐批校对 (共 {total_batches} 批，已启用 15 RPM 速率保护)...", flush=True)
 
     refactored_data = dict(zh_data)
     success_count = 0
@@ -131,23 +131,27 @@ def main():
 
         print(f"  -> [批次 {batch_idx}/{total_batches}] 正在校对润色 {len(batch_payload)} 个词条...", flush=True)
 
-        for attempt in range(1, 4):
+        for attempt in range(1, 5):
             try:
                 polished_chunk = batch_refactor_ai(batch_payload, api_key, api_base, model)
                 refactored_data.update(polished_chunk)
                 success_count += len(polished_chunk)
                 print(f"     ✅ 批次 {batch_idx} 校对完成 ({len(polished_chunk)} 项)", flush=True)
                 
-                # 增量安全写入，支持随时中断续跑
+                # 增量实时写回，防止任何断电丢失
                 with open(ZH_FILE, "w", encoding="utf-8") as f:
                     json.dump(refactored_data, f, ensure_ascii=False, indent=2)
+
+                # 💡 核心控速：成功后固定休眠 4.5 秒，严格保持在 13 RPM，绝不触发 429
+                time.sleep(4.5)
                 break
             except Exception as e:
-                print(f"     ⚠️ 批次 {batch_idx} 第 {attempt} 次重试异常: {e}", flush=True)
-                if attempt < 3:
-                    time.sleep(2 * attempt)
-                else:
-                    print(f"     ❌ 批次 {batch_idx} 失败，保留当前原样", flush=True)
+                # 遇到 429 异常时进行阶梯式休眠等待配额刷新
+                wait_time = 15 * attempt
+                print(f"     ⚠️ 批次 {batch_idx} 第 {attempt} 次遇到限流或异常: {e}，等待 {wait_time} 秒后重试...", flush=True)
+                time.sleep(wait_time)
+                if attempt == 4:
+                    print(f"     ❌ 批次 {batch_idx} 重试达上限，跳过保留原样", flush=True)
 
     print(f"\n🎉 全量校对完成！共重构校对词条: {success_count}/{total_count} 项！", flush=True)
 
