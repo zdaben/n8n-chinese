@@ -1,11 +1,11 @@
 name: Build & Release n8n Localization Package
 
 on:
-  # 1. Scheduled trigger: Automatically check for new stable releases every 6 hours
+  # 1. 定时触发：每 6 小时自动检测官方最新发版
   schedule:
     - cron: '0 */6 * * *'
 
-  # 2. Manual trigger: Specify a version or leave blank to auto-detect latest stable
+  # 2. 手动触发：留空版本号则自动构建最新 Stable，也可以手动指定特定版本
   workflow_dispatch:
     inputs:
       version:
@@ -14,7 +14,7 @@ on:
         default: ''
 
 jobs:
-  # --- Job 1: Check upstream official stable release (~3-5 seconds) ---
+  # --- Job 1: 快速检测官方版本与发版状态 (约 3~5 秒) ---
   check:
     runs-on: ubuntu-latest
     outputs:
@@ -35,7 +35,10 @@ jobs:
             
             if [ -z "$TARGET_VER" ]; then
               echo "🔍 Falling back to GitHub Releases API..."
-              TARGET_VER=$(curl -fsSL --connect-timeout 5 --max-time 10 -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/n8n-io/n8n/releases" 2>/dev/null | jq -r '[.[] | select(.prerelease == false and (.tag_name | contains("alpha") or contains("beta") | not))] | .[0].tag_name' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || true)
+              TARGET_VER=$(curl -fsSL --connect-timeout 5 --max-time 10 -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/n8n-io/n8n/releases" 2>/dev/null \
+                | jq -r '[.[] | select(.prerelease == false and (.tag_name | contains("alpha") or contains("beta") | not))] | .[0].tag_name' \
+                | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
+                | head -n1 || true)
             fi
 
             if [ -z "$TARGET_VER" ]; then
@@ -57,7 +60,7 @@ jobs:
             echo "version=${TARGET_VER}" >> "$GITHUB_OUTPUT"
           fi
 
-  # --- Job 2: Build dependencies and publish release ---
+  # --- Job 2: 现场实时增量翻译 + 源码 Patch + Turborepo 编译 + 发版 ---
   build:
     needs: check
     if: needs.check.outputs.should_build == 'true'
@@ -102,28 +105,35 @@ jobs:
         with:
           node-version: ${{ steps.runtime.outputs.node_version }}
 
-      - name: 5. Enable Corepack and activate pnpm
+      - name: 5. Set up Python for Auto-Translation & Quality Gate
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 6. Enable Corepack and activate pnpm
         run: |
           corepack enable
           corepack prepare "pnpm@${{ steps.runtime.outputs.pnpm_version }}" --activate
           node --version
           pnpm --version
 
-      - name: 6. Locate i18n directory, validate and inject locale
+      - name: 7. Live Auto-Translate missing keys for this version
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PYTHONUNBUFFERED: "1"
         run: |
-          ZH_SOURCE=""
-          if [ -f "languages/zh-CN.json" ]; then
-            ZH_SOURCE="languages/zh-CN.json"
-          elif [ -f "locales/zh-CN.json" ]; then
-            ZH_SOURCE="locales/zh-CN.json"
+          # 如果配置了 AI Key，在打包前现场将针对该版本的新增词条自动翻译补齐
+          if [ -n "$GEMINI_API_KEY" ] || [ -n "$DEEPSEEK_API_KEY" ] || [ -n "$OPENAI_API_KEY" ]; then
+            echo "🚀 [构建前预处理] 正在检测并现场翻译该版本可能包含的增量新词条..."
+            python3 scripts/auto_translate.py || true
           fi
 
-          if [ -z "$ZH_SOURCE" ]; then
-            echo "::error::Source locale file not found in repository!"
-            exit 1
-          fi
+      - name: 8. Validate locale, clean empty entries, and inject zh-CN
+        run: |
+          ZH_SOURCE="languages/zh-CN.json"
 
-          # 寻找主多语言目录
           MAIN_I18N_DIR=""
           if [ -f "n8n-source/packages/frontend/@n8n/i18n/src/locales/en.json" ]; then
             MAIN_I18N_DIR="n8n-source/packages/frontend/@n8n/i18n/src/locales"
@@ -138,21 +148,21 @@ jobs:
 
           echo "Primary i18n directory: ${MAIN_I18N_DIR}"
 
-          # 清洗并输出到主目录
+          # 清洗并输出安全字典到主目录
           python3 scripts/validate_locale.py \
             "${MAIN_I18N_DIR}/en.json" \
             "${ZH_SOURCE}" \
             "${MAIN_I18N_DIR}/zh-CN.json" \
             "$GITHUB_WORKSPACE/locale_summary.md"
 
-          # 全量同步到所有可能存在的 locales 目录
+          # 同步至所有可能存在的 locales 目录
           find n8n-source/packages -type d -name "locales" | while read -r dir; do
             if [ -f "${dir}/en.json" ] && [ "$dir" != "$MAIN_I18N_DIR" ]; then
               cp "${MAIN_I18N_DIR}/zh-CN.json" "${dir}/zh-CN.json"
             fi
           done
 
-      - name: 7. Patch n8n i18n runtime for zh-CN (Fail-Closed Assertion)
+      - name: 9. Patch n8n i18n runtime for zh-CN (Fail-Closed Assertion)
         run: |
           I18N_INDEX="n8n-source/packages/frontend/@n8n/i18n/src/index.ts"
 
@@ -186,7 +196,7 @@ jobs:
               print("::error::无法在 index.ts 中定位 englishBaseText import 语句！")
               sys.exit(1)
 
-          # 2. 注册 zh-CN 到 messages 字典中（保持 locale: 'en' 默认，由运行期动态切换）
+          # 2. 注册 zh-CN 到 messages 字典中 (保持 locale: 'en' 由运行期 N8N_DEFAULT_LOCALE 动态控制)
           pattern = r'messages\s*:\s*\{\s*en\s*:\s*englishBaseText\s*(,)?\s*\}'
           replacement = r"messages: { en: englishBaseText, 'zh-CN': chineseBaseText, zh: chineseBaseText \1 }"
 
@@ -196,19 +206,16 @@ jobs:
               sys.exit(1)
 
           path.write_text(new_text, encoding="utf-8")
-          print("✅ 成功注入并注册 zh-CN 语言模块！")
+          print("✅ 成功在 index.ts 中注册 zh-CN 语言模块！")
           PY
 
-          # 3. 严格自检断言
+          # 3. 严格断言验证
           grep -F "'zh-CN': chineseBaseText" "$I18N_INDEX" >/dev/null || {
             echo "::error::zh-CN runtime registration verification failed!"
             exit 1
           }
 
-          echo "===== Patched i18n Runtime ====="
-          grep -nE "englishBaseText|chineseBaseText|messages:" "$I18N_INDEX"
-
-      - name: 8. Build dependencies and editor-ui via Turborepo
+      - name: 10. Build dependencies and editor-ui via Turborepo
         working-directory: n8n-source
         env:
           NODE_OPTIONS: "--max-old-space-size=8192"
@@ -218,7 +225,7 @@ jobs:
 
           echo "| **Turborepo 构建** | 全依赖拓扑编译 (\`n8n-editor-ui\`) | **✅ PASS** |" >> "$GITHUB_WORKSPACE/locale_summary.md"
 
-      - name: 9. Strictly locate and package dist bundle
+      - name: 11. Strictly locate and package dist bundle
         run: |
           mapfile -t DIST_DIRS < <(find n8n-source/packages -type d -path '*/editor-ui/dist')
 
@@ -234,7 +241,19 @@ jobs:
 
           tar -czf "$GITHUB_WORKSPACE/editor-ui.tar.gz" -C "$PARENT_DIR" dist
 
-      - name: 10. Publish GitHub Release
+      - name: 12. Commit and Push Newly Translated Dictionary (If any)
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add languages/zh-CN.json
+          if git commit -m "chore(i18n): sync live translated keys for v${{ needs.check.outputs.version }} [skip ci]"; then
+            git push
+            echo "✅ 现场翻译的新增词条已自动回写推送到 main 分支！"
+          else
+            echo "没有需要提交的新增词条"
+          fi
+
+      - name: 13. Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "release/${{ needs.check.outputs.version }}"
