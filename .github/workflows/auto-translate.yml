@@ -1,11 +1,9 @@
 name: Run Auto Translate
 
 on:
-  # 1. 定时触发：每周一凌晨 03:00 (UTC 时间，即北京时间周一上午 11:00) 自动执行
+  # 每周一凌晨 03:00 (UTC 时间，即北京时间周一上午 11:00) 自动执行
   schedule:
     - cron: '0 3 * * 1'
-
-  # 2. 保留手动触发：随时可以在 GitHub 网页端点击 Run workflow
   workflow_dispatch:
 
 jobs:
