@@ -18,9 +18,12 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 3. Run Gemma 4 31B Auto Translation
+      - name: 3. Run AI Auto Translation
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PYTHONUNBUFFERED: "1"  # 强制实时输出控制台日志
         run: |
           python3 scripts/auto_translate.py
 
@@ -29,7 +32,7 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add languages/zh-CN.json
-          if git commit -m "chore(i18n): auto-translate missing keys via gemma-4-31b-it [skip ci]"; then
+          if git commit -m "chore(i18n): auto-translate missing locale keys [skip ci]"; then
             git push
             echo "✅ 字典已成功更新并推送到 main 分支！"
           else
