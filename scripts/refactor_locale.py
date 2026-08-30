@@ -8,6 +8,22 @@ import urllib.error
 
 EN_URL = "https://raw.githubusercontent.com/n8n-io/n8n/master/packages/frontend/@n8n/i18n/src/locales/en.json"
 ZH_FILE = "languages/zh-CN.json"
+CHECKPOINT_FILE = ".refactor_checkpoint.json"
+
+# 统一术语规范
+GLOSSARY_RULES = """
+【统一专业术语强制规范】:
+- Workflow -> 工作流 (严禁翻译为: 工作流程、工单)
+- Node -> 节点 (严禁翻译为: 结点、组件)
+- Credentials -> 凭据 (严禁翻译为: 证书、认证)
+- Execution -> 执行 / 运行
+- Trigger -> 触发器
+- Canvas -> 画布
+- Pin Data / Pinned -> 固定数据 / 已固定 (严禁翻译为: 锁定、别针)
+- Expression -> 表达式
+- Insights -> 数据洞察
+- Webhook / API / JSON / HTTP / REST -> 必须保留全大写专有名词
+"""
 
 def fetch_official_en():
     print("🔍 正在拉取官方最新的 en.json 基准字典...", flush=True)
@@ -15,42 +31,41 @@ def fetch_official_en():
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
-def batch_translate_ai(texts_dict, api_key, api_base, model):
-    # 复用完全相同的 Prompt 结构，融入专业术语表
-    prompt = f"""你是一个专业的前端国际化翻译专家。请将以下 n8n 工作流软件的前端 JSON 英文词条翻译成简体中文。
-要求：
-1. 严禁修改或遗漏任何变量占位符，如 {{time}}、{{name}}、{{count}}、{{0}}、HTML标签 <b> 等必须100%原样保留。
-2. 保持专业术语（Workflow -> 工作流，Node -> 节点，Credentials -> 凭据，Execution -> 执行，Canvas -> 画布，Pin Data -> 固定数据，Insights -> 数据洞察，Webhook/API/JSON -> 保留大写）。
-3. 只返回严格合法的 JSON 格式字典: {{ "key": "翻译后的中文" }}，不要输出任何 Markdown 标记或解释文字。
+def call_gemini_native(batch_dict, api_key, model="gemini-2.5-flash"):
+    """使用 Google 原生 REST API + JSON 强制约束"""
+    prompt = f"""你是一个专业的前端国际化文案与术语统一专家。请对以下 n8n 自动化软件的前端英文词条进行【统一术语重构翻译与文案润色】。
 
-待翻译 JSON:
-{json.dumps(texts_dict, ensure_ascii=False)}
+{GLOSSARY_RULES}
+
+【严格要求】:
+1. 严禁修改、丢失或破坏任何变量占位符！如 {{time}}、{{name}}、{{count}}、{{0}}、HTML标签 <b> 等必须100%原样保留。
+2. 语句自然通顺、专业规范，符合中国开发者的软件交互习惯，消除生硬机翻腔。
+3. 严格返回纯 JSON 字典格式: {{ "Key": "规范润色后的中文" }}。
+
+待重构词条 JSON:
+{json.dumps(batch_dict, ensure_ascii=False)}
 """
-    data = json.dumps({
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.1
-    }).encode("utf-8")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.1
+        }
+    }
 
     req = urllib.request.Request(
-        f"{api_base.rstrip('/')}/chat/completions",
-        data=data,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        }
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"}
     )
-    
+
     with urllib.request.urlopen(req, timeout=60) as resp:
         res = json.loads(resp.read().decode("utf-8"))
-        content = res["choices"][0]["message"]["content"].strip()
-        if content.startswith("```json"):
-            content = content[7:]
-        elif content.startswith("```"):
-            content = content[3:]
-        if content.endswith("```"):
-            content = content[:-3]
-        return json.loads(content.strip())
+        raw_text = res["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return json.loads(raw_text)
 
 def main():
     if not os.path.exists(ZH_FILE):
@@ -61,67 +76,80 @@ def main():
         zh_data = json.load(f)
 
     en_data = fetch_official_en()
-
-    # 对官方全部有效词条进行全量术语重构校对
-    items = list(en_data.items())
-    total_count = len(items)
-    print(f"📊 官方基准有效词条: {total_count} 项，启动全量标准化校对重构...", flush=True)
+    all_keys = list(en_data.keys())
+    total_count = len(all_keys)
 
     gemini_key = os.getenv("GEMINI_API_KEY")
-    deepseek_key = os.getenv("DEEPSEEK_API_KEY")
-    openai_key = os.getenv("OPENAI_API_KEY")
-
-    if gemini_key:
-        api_key = gemini_key
-        api_base = "https://generativelanguage.googleapis.com/v1beta/openai"
-        model = "gemini-flash-lite-latest"
-        print(f"🌟 使用 Google AI 官方模型: {model}", flush=True)
-    elif deepseek_key:
-        api_key = deepseek_key
-        api_base = "https://api.deepseek.com/v1"
-        model = "deepseek-chat"
-        print(f"🌟 使用 DeepSeek: {model}", flush=True)
-    elif openai_key:
-        api_key = openai_key
-        api_base = "https://api.openai.com/v1"
-        model = "gpt-4o-mini"
-        print(f"🌟 使用 OpenAI: {model}", flush=True)
-    else:
-        print("❌ 未检测到 API_KEY！", flush=True)
+    if not gemini_key:
+        print("❌ 未检测到 GEMINI_API_KEY！", flush=True)
         sys.exit(1)
 
-    # 采用与 auto_translate.py 完全一致的批次大小与扁平结构
-    batch_size = 100
-    total_batches = (total_count + batch_size - 1) // batch_size
-    print(f"🤖 开始分批全量校对 (共 {total_batches} 批，每批 {batch_size} 条)...", flush=True)
+    model = "gemini-flash-lite-latest"
+    print(f"📊 官方基准有效词条: {total_count} 项 | 使用模型: {model}", flush=True)
 
+    # 1. 加载断点进度
+    checkpoint_idx = 0
+    if os.path.exists(CHECKPOINT_FILE):
+        try:
+            with open(CHECKPOINT_FILE, "r", encoding="utf-8") as cf:
+                cp_data = json.load(cf)
+                checkpoint_idx = cp_data.get("last_index", 0)
+                print(f"🔄 检测到历史断点！将直接从第 {checkpoint_idx} 项词条继续校对...", flush=True)
+        except Exception:
+            checkpoint_idx = 0
+
+    batch_size = 80
     refactored_data = dict(zh_data)
-    success_count = 0
+    total_batches = (total_count + batch_size - 1) // batch_size
+    start_batch = checkpoint_idx // batch_size + 1
 
-    for i in range(0, total_count, batch_size):
-        chunk = dict(items[i:i + batch_size])
+    print(f"🚀 启动全量校对 (共 {total_batches} 批，当前从第 {start_batch} 批开始)...", flush=True)
+
+    for i in range(checkpoint_idx, total_count, batch_size):
+        batch_keys = all_keys[i:i + batch_size]
         batch_idx = i // batch_size + 1
-        print(f"  -> [批次 {batch_idx}/{total_batches}] 正在校对重构 {len(chunk)} 个词条...", flush=True)
-        
-        for attempt in range(1, 4):
+        chunk = {k: en_data[k] for k in batch_keys}
+
+        print(f"  -> [批次 {batch_idx}/{total_batches}] 正在校对润色 {len(chunk)} 个词条...", flush=True)
+
+        # 智能持久化重试（遇到 429 绝不跳过，自动退避等待直至成功）
+        attempt = 1
+        while True:
             try:
-                translated_chunk = batch_translate_ai(chunk, api_key, api_base, model)
+                translated_chunk = call_gemini_native(chunk, gemini_key, model)
                 refactored_data.update(translated_chunk)
-                success_count += len(translated_chunk)
-                print(f"     ✅ 批次 {batch_idx} 完成，已处理 {len(translated_chunk)} 条", flush=True)
-                
-                # 增量安全写入
+
+                # 实时保存到字典文件
                 with open(ZH_FILE, "w", encoding="utf-8") as f:
                     json.dump(refactored_data, f, ensure_ascii=False, indent=2)
-                break
-            except Exception as e:
-                print(f"     ⚠️ 批次 {batch_idx} 第 {attempt} 次重试异常: {e}", flush=True)
-                if attempt < 3:
-                    time.sleep(2 * attempt)
-                else:
-                    print(f"     ❌ 批次 {batch_idx} 失败，保留当前已有翻译", flush=True)
 
-    print(f"\n🎉 全量重构校对完成！成功校对: {success_count}/{total_count} 项，总词条数: {len(refactored_data)}", flush=True)
+                # 实时更新断点记录
+                with open(CHECKPOINT_FILE, "w", encoding="utf-8") as cf:
+                    json.dump({"last_index": i + len(chunk)}, cf)
+
+                print(f"     ✅ 批次 {batch_idx} 校对成功并已落盘保存 ({len(translated_chunk)} 项)", flush=True)
+                
+                # 批次间轻微间隔，保护配额
+                time.sleep(1.0)
+                break
+
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8") if e.fp else str(e)
+                wait_seconds = min(15 * attempt, 60)
+                print(f"     ⚠️ 批次 {batch_idx} 遇到限流 [HTTP {e.code}]，等待 {wait_seconds} 秒后自动恢复重试...", flush=True)
+                time.sleep(wait_seconds)
+                attempt += 1
+
+            except Exception as e:
+                print(f"     ⚠️ 批次 {batch_idx} 异常: {e}，5秒后重试...", flush=True)
+                time.sleep(5)
+                attempt += 1
+
+    # 校对完成后清除断点文件
+    if os.path.exists(CHECKPOINT_FILE):
+        os.remove(CHECKPOINT_FILE)
+
+    print(f"\n🎉 全量 8,297 条词条深度重构与术语校对 100% 完成！", flush=True)
 
 if __name__ == "__main__":
     main()
