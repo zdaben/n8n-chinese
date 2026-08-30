@@ -1,52 +1,134 @@
+# 🌐 n8n-chinese: 自动化 n8n 简体中文前端构建流水线
 
-# 安装教程
+> 专为 n8n 打造的自动化简体中文（zh-CN）构建与发布流水线。基于官方源码与 Turborepo 拓扑编译，提供严格 1:1 版本匹配的前端本地化补丁包。
 
-## 自带中文docker镜像
-```shell
-docker run -it --rm --name n8ntest \
--p 15678:5678 \
--v ~/.n8n:/home/node/.n8n \
--e N8N_SECURE_COOKIE=false \
-blowsnow/n8n-chinese
+[![Build & Release](https://github.com/zdaben/n8n-chinese/actions/workflows/build.yml/badge.svg)](https://github.com/zdaben/n8n-chinese/actions/workflows/build.yml)
+[![GitHub release](https://img.shields.io/github/v/release/zdaben/n8n-chinese?include_prereleases&color=brightgreen)](https://github.com/zdaben/n8n-chinese/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Installer](https://img.shields.io/badge/Installer-zdaben%2Fn8n__install-orange)](https://github.com/zdaben/n8n_install)
+
+---
+
+## 🌟 项目特色
+
+* 🔄 **无人值守自动化追踪**：GitHub Actions 每 6 小时自动比对 n8n 官方 `stable` 版本，发现新版本自动触发编译与发布。
+* 🧱 **Turborepo 拓扑编译**：严格根据官方源码环境（动态探测 Node/pnpm 版本），递归编译 `@n8n/i18n` 等前置依赖，保证产物 100% 稳定可靠。
+* 🛡️ **智能多语言门禁（Quality Gate）**：内置 `validate_locale.py`，自动清洗空值词条，严格校验插值占位符（如 `{{time}}`），杜绝因格式错误导致的前端渲染崩溃。
+* 📦 **开箱即用 Releases**：每次构建自动发布 `release/X.Y.Z` Tag，提供即插即用的 `editor-ui.tar.gz` 产物。
+
+---
+
+## 🚀 快速使用
+
+### 方式一：使用配套一键管理工具（推荐）
+
+配合配套的 [zdaben/n8n_install](https://github.com/zdaben/n8n_install) CLI 工具，可实现官方引擎与汉化补丁的自动匹配、热更新与安全降级：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zdaben/n8n_install/main/n8n.sh -o /usr/local/bin/n8n && chmod +x /usr/local/bin/n8n && n8n install
 ```
 
-## docker安装
-> 其他命令参考n8n官方文档
-```shell
-docker run -it --rm --name n8ntest \
--p 15678:5678 \
--v 【替换为下载的编辑器UI目录】:/usr/local/lib/node_modules/n8n/node_modules/n8n-editor-ui/dist \
--v ~/.n8n:/home/node/.n8n \
--e N8N_DEFAULT_LOCALE=zh-CN \
--e N8N_SECURE_COOKIE=false \
-n8nio/n8n
+---
+
+### 方式二：手动在 Docker Compose 中挂载使用
+
+如果你已有运行中的官方 n8n 容器，可通过目录挂载方式直接替换前端 UI：
+
+#### 1. 下载对应版本的汉化包并解压
+假设你的 n8n 版本为 `2.36.8`：
+```bash
+# 创建前端目录
+mkdir -p /root/n8n/n8n_ui
+
+# 下载对应版本的 editor-ui.tar.gz
+curl -fsSL "https://github.com/zdaben/n8n-chinese/releases/download/release%2F2.36.8/editor-ui.tar.gz" -o /tmp/editor-ui.tar.gz
+
+# 解压并赋予权限 (n8n 容器内部运行 UID 为 1000)
+tar -xzf /tmp/editor-ui.tar.gz -C /root/n8n/n8n_ui
+chown -R 1000:1000 /root/n8n/n8n_ui
+rm -f /tmp/editor-ui.tar.gz
 ```
 
+#### 2. 在 `docker-compose.yml` 中挂载
+```yaml
+services:
+  n8n:
+    image: n8nio/n8n:2.36.8
+    container_name: n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_DEFAULT_LOCALE=zh-CN      # 启用中文本地化
+      - GENERIC_TIMEZONE=Asia/Shanghai
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./n8n_data:/home/node/.n8n
+      # 挂载替换官方前端静态文件
+      - /root/n8n/n8n_ui/dist:/usr/local/lib/node_modules/n8n/node_modules/n8n-editor-ui/dist
+```
 
-## npx本地启动n8n替换安装
-> 其他本地方式启动的话参考这个即可
-1. 找到路径：C:\Users\xxxxxx\AppData\Local\npm-cache\_npx\n8n\node_modules\n8n-editor-ui\dist
-   （新版本也可能是C:\Users\xxxxxx\AppData\Roaming\npm\node_modules\n8n\node_modules\n8n-editor-ui\dist）
-2. 下载对应版本editor-ui.tar.gz文件
-3. 解压到 dist目录下替换
-4. 设置环境变量 N8N_DEFAULT_LOCALE=zh-CN，自行咨询AI设置方法
-5. 重启 n8n 服务
+#### 3. 重启容器
+```bash
+docker compose up -d
+```
 
-# 原理
-> editor-ui是支持i18n的，但是未开放语言包
+---
 
-1. 手动添加 zh-CN.json 到 editor-ui `/src/plugins/i18n/locales/` 里面，然后重新编译
-2. 环境里面设置语言即可正常使用中文  `N8N_DEFAULT_LOCALE=zh-CN`
+## ⚙️ 手动触发特定版本构建
 
-# 参考n8n官方i18n介绍
-https://github.com/n8n-io/n8n/blob/master/packages/frontend/%40n8n/i18n/docs/README.md
+如果需要为历史版本或测试版本单独构建汉化补丁：
 
-# 语言环境变量
-> 其他语言参考：https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Accept-Language
+1. 进入本仓库的 **[Actions](../../actions/workflows/build.yml)** 页面。
+2. 点击左侧 **Build & Release n8n Chinese UI**。
+3. 点击右侧 **Run workflow** 下拉框，输入目标版本号（例如 `2.33.7` 或 `2.36.8`）。
+4. 等待 4~5 分钟构建完成，即可在 **[Releases](../../releases)** 页面下载产物。
 
-N8N_DEFAULT_LOCALE=zh-CN
+---
 
+## 🛠️ 词条维护与本地校验
 
-# 广告
-本项目 CDN 加速及安全防护由 Tencent EdgeOne 赞助：EdgeOne 提供长期有效的免费套餐，包含不限量的流量和请求，覆盖中国大陆节点，且无任何超额收费，感兴趣的朋友可以点击下面的链接领取
-[亚洲最佳CDN、边缘和安全解决方案 - Tencent EdgeOne](https://edgeone.ai/zh?from=github)
+欢迎提交 PR 补充或修正翻译！词条文件位于 `languages/zh-CN.json`。
+
+### 本地校验词条语法与覆盖率
+在提交修改前，可运行仓库内置的门禁脚本检查格式：
+
+```bash
+# 语法与占位符校验
+python3 scripts/validate_locale.py <官方en.json路径> languages/zh-CN.json
+```
+
+**门禁规则说明**：
+* ❌ **阻断错误 (Blocker)**：JSON 语法错误、插值占位符 `{param}` 不匹配、空值词条（阻断构建，防止前端崩溃）。
+* ⚠️ **警告提醒 (Warning)**：新增待翻译词条、已废弃旧词条（输出统计报告，允许正常打包并 Fallback 显示英文）。
+
+---
+
+## 📂 仓库结构
+
+```text
+zdaben/n8n-chinese
+├── .github/
+│   └── workflows/
+│       └── build.yml          # GitHub Actions 自动化检测与构建工作流
+├── languages/
+│   └── zh-CN.json             # 简体中文核心翻译字典
+├── scripts/
+│   └── validate_locale.py     # 多语言质量门禁与清洗校验脚本
+├── LICENSE                    # MIT 开源许可证
+└── README.md
+```
+
+---
+
+## 🔗 相关项目
+
+* **一键管理与部署 CLI**：[zdaben/n8n_install](https://github.com/zdaben/n8n_install)
+* **n8n 官方仓库**：[n8n-io/n8n](https://github.com/n8n-io/n8n)
+
+---
+
+## 📄 License
+
+本项目基于 [MIT License](LICENSE) 开源。
+```
