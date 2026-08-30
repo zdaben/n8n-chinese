@@ -1,0 +1,74 @@
+name: Build & Release n8n Chinese UI
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'n8n 官方版本号 (例如: 2.36.8)'
+        required: true
+        default: '2.36.8'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout 本地汉化字典
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js 与 Pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - name: 克隆 n8n 官方对应版本源码
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          echo "Building n8n editor-ui for version: ${VERSION}"
+          git clone --depth 1 --branch "n8n@${VERSION}" https://github.com/n8n-io/n8n.git n8n-source || \
+          git clone --depth 1 --branch "release/${VERSION}" https://github.com/n8n-io/n8n.git n8n-source || \
+          git clone --depth 1 --branch "v${VERSION}" https://github.com/n8n-io/n8n.git n8n-source
+
+      - name: 注入中文语言包 (zh-CN.json)
+        run: |
+          # 兼容不同版本 n8n 的语言包目录结构
+          if [ -d "n8n-source/packages/frontend/@n8n/i18n/src/locales" ]; then
+            cp zh-CN.json n8n-source/packages/frontend/@n8n/i18n/src/locales/zh-CN.json
+          fi
+          if [ -d "n8n-source/packages/editor-ui/src/plugins/i18n/locales" ]; then
+            cp zh-CN.json n8n-source/packages/editor-ui/src/plugins/i18n/locales/zh-CN.json
+          fi
+
+      - name: 编译 editor-ui
+        working-directory: n8n-source
+        run: |
+          pnpm install --frozen-lockfile=false
+          # 构建依赖的基础包与前端 UI
+          pnpm --filter @n8n/i18n build || true
+          pnpm --filter editor-ui build
+
+      - name: 打包 dist 产物
+        run: |
+          cd n8n-source/packages/editor-ui
+          tar -czf ../../../editor-ui.tar.gz dist/
+          cd ../../../
+
+      - name: 创建 GitHub Release 并上传
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "release/${{ github.event.inputs.version }}"
+          name: "n8n v${{ github.event.inputs.version }} 汉化补丁"
+          body: |
+            ### n8n 汉化补丁包
+            - 适配 n8n 官方引擎版本：`v${{ github.event.inputs.version }}`
+            - 构建产物：`editor-ui.tar.gz`
+          files: editor-ui.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
