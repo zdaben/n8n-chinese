@@ -79,7 +79,6 @@ jobs:
             exit 1
           fi
 
-          echo "Official tag verified. Cloning source..."
           git clone --depth 1 --branch "$TAG" https://github.com/n8n-io/n8n.git n8n-source
 
       - name: 3. Parse Node.js and pnpm specifications
@@ -109,16 +108,18 @@ jobs:
           node --version
           pnpm --version
 
-      - name: 6. Locate i18n directory and inject locale files
-        id: locate-i18n
+      - name: 6. Locate i18n directory and validate locale
         run: |
           ZH_SOURCE=""
           if [ -f "languages/zh-CN.json" ]; then
             ZH_SOURCE="languages/zh-CN.json"
           elif [ -f "locales/zh-CN.json" ]; then
             ZH_SOURCE="locales/zh-CN.json"
-          elif [ -f "languages/zh.json" ]; then
-            ZH_SOURCE="languages/zh.json"
+          fi
+
+          if [ -z "$ZH_SOURCE" ]; then
+            echo "::error::Source locale file not found in repository!"
+            exit 1
           fi
 
           TARGET_DIR=""
@@ -131,19 +132,14 @@ jobs:
             exit 1
           fi
 
-          echo "Discovered locale directory: ${TARGET_DIR}"
-          cp "$ZH_SOURCE" "${TARGET_DIR}/zh-CN.json"
-          echo "target_dir=${TARGET_DIR}" >> "$GITHUB_OUTPUT"
-
-      - name: 7. Run locale quality gate and generate metrics
-        run: |
-          TARGET_DIR="${{ steps.locate-i18n.outputs.target_dir }}"
+          # 执行清洗并单向写入目标路径
           python3 scripts/validate_locale.py \
             "${TARGET_DIR}/en.json" \
+            "${ZH_SOURCE}" \
             "${TARGET_DIR}/zh-CN.json" \
             "$GITHUB_WORKSPACE/locale_summary.md"
 
-      - name: 8. Build dependencies and editor-ui via Turborepo
+      - name: 7. Build dependencies and editor-ui via Turborepo
         working-directory: n8n-source
         env:
           NODE_OPTIONS: "--max-old-space-size=8192"
@@ -151,13 +147,29 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm turbo run build --filter=...n8n-editor-ui
 
-      - name: 9. Locate and package dist bundle
+          # 编译成功后，追加构建指标至 Release 描述文件
+          cat >> "$GITHUB_WORKSPACE/locale_summary.md" <<EOF
+| **Turborepo 构建** | 全依赖拓扑编译 (`n8n-editor-ui`) | **✅ PASS** |
+EOF
+
+      - name: 8. Strictly locate and package dist bundle
         run: |
-          DIST_DIR=$(find n8n-source/packages -type d -name "dist" | grep -E "editor-ui/dist$" | head -n1)
-          PARENT_DIR=$(dirname "$DIST_DIR")
+          # 严格断言：必须精确匹配到一个 editor-ui/dist
+          mapfile -t DIST_DIRS < <(find n8n-source/packages -type d -path '*/editor-ui/dist')
+
+          if [ "${#DIST_DIRS[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one editor-ui dist directory, but found ${#DIST_DIRS[@]}!"
+            printf '%s\n' "${DIST_DIRS[@]}"
+            exit 1
+          fi
+
+          DIST_DIR="${DIST_DIRS[0]}"
+          PARENT_DIR="$(dirname "$DIST_DIR")"
+          echo "Found exact build output at: ${PARENT_DIR}"
+
           tar -czf "$GITHUB_WORKSPACE/editor-ui.tar.gz" -C "$PARENT_DIR" dist
 
-      - name: 10. Publish GitHub Release with Metrics
+      - name: 9. Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "release/${{ needs.check.outputs.version }}"
