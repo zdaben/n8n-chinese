@@ -14,16 +14,16 @@ EN_URL = "https://raw.githubusercontent.com/n8n-io/n8n/master/packages/frontend/
 ZH_FILE = "languages/zh-CN.json"
 
 def fetch_official_en():
-    print("🔍 正在拉取官方最新的 en.json 基准字典...")
+    print("🔍 正在拉取官方最新的 en.json 基准字典...", flush=True)
     req = urllib.request.Request(EN_URL, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req) as resp:
+    with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 def batch_translate_ai(texts_dict, api_key, api_base, model):
     prompt = f"""你是一个专业的前端国际化翻译助手。请将以下 n8n 工作流软件的前端 JSON 英文词条翻译成简体中文。
 要求：
 1. 严禁修改或遗漏任何变量占位符，如 {{time}}、{{name}}、{{count}}、{{0}} 等必须原样保留。
-2. 保持专业术语（Workflow -> 工作流，Node -> 节点，Credential -> 凭据，Execution -> 执行，Canvas -> 画布，Insights -> 洞察与指标，Settings -> 设置）。
+2. 保持专业术语（Workflow -> 工作流，Node -> 节点，Credential -> 凭据，Execution -> 执行，Canvas -> 画布，Insights -> 洞察与指标）。
 3. 只返回严格合法的 JSON 格式字典，不要输出任何 Markdown 标记或多余文字。
 
 待翻译 JSON:
@@ -44,10 +44,9 @@ def batch_translate_ai(texts_dict, api_key, api_base, model):
         }
     )
     
-    with urllib.request.urlopen(req) as resp:
+    with urllib.request.urlopen(req, timeout=60) as resp:
         res = json.loads(resp.read().decode("utf-8"))
         content = res["choices"][0]["message"]["content"].strip()
-        # 清理可能附带的 Markdown 代码块标记
         if content.startswith("```json"):
             content = content[7:]
         elif content.startswith("```"):
@@ -58,7 +57,7 @@ def batch_translate_ai(texts_dict, api_key, api_base, model):
 
 def main():
     if not os.path.exists(ZH_FILE):
-        print(f"❌ 未找到本地字典: {ZH_FILE}")
+        print(f"❌ 未找到本地字典: {ZH_FILE}", flush=True)
         sys.exit(1)
 
     with open(ZH_FILE, "r", encoding="utf-8") as f:
@@ -67,62 +66,60 @@ def main():
     en_data = fetch_official_en()
     missing = {k: en_data[k] for k in en_data if k not in zh_data}
 
-    print(f"📊 官方有效词条: {len(en_data)} | 本地已有: {len(zh_data)}")
-    print(f"🔍 待翻译缺失词条: {len(missing)}")
+    print(f"📊 官方有效词条: {len(en_data)} | 本地已有: {len(zh_data)}", flush=True)
+    print(f"🔍 待翻译缺失词条: {len(missing)}", flush=True)
 
     if not missing:
-        print("🎉 恭喜！当前翻译覆盖率已是 100%！")
+        print("🎉 恭喜！当前翻译覆盖率已是 100%！", flush=True)
         return
 
-    # 1. 优先读取 GEMINI_API_KEY，使用 Gemma 4 31B 模型
     gemini_key = os.getenv("GEMINI_API_KEY")
     deepseek_key = os.getenv("DEEPSEEK_API_KEY")
     openai_key = os.getenv("OPENAI_API_KEY")
 
     if gemini_key:
         api_key = gemini_key
-        # Google AI Studio 官方 OpenAI 兼容接口
         api_base = "https://generativelanguage.googleapis.com/v1beta/openai"
-        model = "gemma-4-31b-it"  # Gemma 4 31B 指令微调模型
-        print(f"🌟 检测到 GEMINI_API_KEY，使用模型: {model}")
+        model = "gemma-4-31b-it"
+        print(f"🌟 使用 Google AI Studio: {model}", flush=True)
     elif deepseek_key:
         api_key = deepseek_key
         api_base = "https://api.deepseek.com/v1"
         model = "deepseek-chat"
-        print(f"🌟 检测到 DEEPSEEK_API_KEY，使用模型: {model}")
+        print(f"🌟 使用 DeepSeek: {model}", flush=True)
     elif openai_key:
         api_key = openai_key
         api_base = "https://api.openai.com/v1"
         model = "gpt-4o-mini"
-        print(f"🌟 检测到 OPENAI_API_KEY，使用模型: {model}")
+        print(f"🌟 使用 OpenAI: {model}", flush=True)
     else:
-        print("❌ 未检测到 GEMINI_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY！")
+        print("❌ 未检测到任何 API_KEY！", flush=True)
         sys.exit(1)
 
-    # 按每批 80 条切片分批调用，防止单次 Token 超出限制
+    # 批次提升至 150 条，大幅缩短总轮数
     items = list(missing.items())
-    batch_size = 80
+    batch_size = 150
     total_batches = (len(items) + batch_size - 1) // batch_size
     
-    print(f"🤖 开始调用 {model} 进行分批翻译 (共 {total_batches} 批)...")
+    print(f"🤖 开始分批翻译 (共 {total_batches} 批，每批 {batch_size} 条)...", flush=True)
     success_count = 0
 
     for i in range(0, len(items), batch_size):
         chunk = dict(items[i:i + batch_size])
         batch_idx = i // batch_size + 1
-        print(f"  -> [批次 {batch_idx}/{total_batches}] 正在翻译 {len(chunk)} 个词条...")
+        print(f"  -> [批次 {batch_idx}/{total_batches}] 正在翻译 {len(chunk)} 个词条...", flush=True)
         try:
             translated_chunk = batch_translate_ai(chunk, api_key, api_base, model)
             zh_data.update(translated_chunk)
             success_count += len(translated_chunk)
+            print(f"     ✅ 批次 {batch_idx} 完成，已翻译 {len(translated_chunk)} 条", flush=True)
         except Exception as e:
-            print(f"  ⚠️ 批次 {batch_idx} 翻译异常: {e}，跳过该批保留官方英文")
+            print(f"     ⚠️ 批次 {batch_idx} 异常: {e}，跳过该批", flush=True)
 
-    # 写回 zh-CN.json
     with open(ZH_FILE, "w", encoding="utf-8") as f:
         json.dump(zh_data, f, ensure_ascii=False, indent=2)
 
-    print(f"\n💾 字典更新完成！本次成功翻译新增: {success_count} 条，当前总词条数: {len(zh_data)}")
+    print(f"\n💾 字典更新完成！本次成功翻译: {success_count} 条，总词条数: {len(zh_data)}", flush=True)
 
 if __name__ == "__main__":
     main()
