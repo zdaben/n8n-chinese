@@ -138,22 +138,77 @@ jobs:
 
           echo "Primary i18n directory: ${MAIN_I18N_DIR}"
 
-          # 运行清洗验证并将安全字典写入主目录
+          # 清洗并输出到主目录
           python3 scripts/validate_locale.py \
             "${MAIN_I18N_DIR}/en.json" \
             "${ZH_SOURCE}" \
             "${MAIN_I18N_DIR}/zh-CN.json" \
             "$GITHUB_WORKSPACE/locale_summary.md"
 
-          # 全量同步到所有存在的 locales 目录（确保 Vite/editor-ui 打包时 100% 包含中文）
+          # 全量同步到所有可能存在的 locales 目录
           find n8n-source/packages -type d -name "locales" | while read -r dir; do
             if [ -f "${dir}/en.json" ] && [ "$dir" != "$MAIN_I18N_DIR" ]; then
-              echo "Syncing cleaned zh-CN.json to secondary locale directory: ${dir}"
               cp "${MAIN_I18N_DIR}/zh-CN.json" "${dir}/zh-CN.json"
             fi
           done
 
-      - name: 7. Build dependencies and editor-ui via Turborepo
+      - name: 7. Patch n8n i18n runtime for zh-CN (Fail-Closed Assertion)
+        run: |
+          I18N_INDEX="n8n-source/packages/frontend/@n8n/i18n/src/index.ts"
+
+          if [ ! -f "$I18N_INDEX" ]; then
+            echo "::error::i18n index.ts not found: $I18N_INDEX"
+            exit 1
+          fi
+
+          python3 - "$I18N_INDEX" <<'PY'
+          import sys
+          import re
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+
+          # 1. 注入中文语言包 import 语句
+          if "import englishBaseText from './locales/en.json';" in text:
+              text = text.replace(
+                  "import englishBaseText from './locales/en.json';",
+                  "import englishBaseText from './locales/en.json';\nimport chineseBaseText from './locales/zh-CN.json';",
+                  1,
+              )
+          elif 'import englishBaseText from "./locales/en.json";' in text:
+              text = text.replace(
+                  'import englishBaseText from "./locales/en.json";',
+                  'import englishBaseText from "./locales/en.json";\nimport chineseBaseText from "./locales/zh-CN.json";',
+                  1,
+              )
+          else:
+              print("::error::无法在 index.ts 中定位 englishBaseText import 语句！")
+              sys.exit(1)
+
+          # 2. 注册 zh-CN 到 messages 字典中（保持 locale: 'en' 默认，由运行期动态切换）
+          pattern = r'messages\s*:\s*\{\s*en\s*:\s*englishBaseText\s*(,)?\s*\}'
+          replacement = r"messages: { en: englishBaseText, 'zh-CN': chineseBaseText, zh: chineseBaseText \1 }"
+
+          new_text, count = re.subn(pattern, replacement, text, count=1)
+          if count == 0:
+              print("::error::无法在 index.ts 中定位 messages 对象结构进行注册！")
+              sys.exit(1)
+
+          path.write_text(new_text, encoding="utf-8")
+          print("✅ 成功注入并注册 zh-CN 语言模块！")
+          PY
+
+          # 3. 严格自检断言
+          grep -F "'zh-CN': chineseBaseText" "$I18N_INDEX" >/dev/null || {
+            echo "::error::zh-CN runtime registration verification failed!"
+            exit 1
+          }
+
+          echo "===== Patched i18n Runtime ====="
+          grep -nE "englishBaseText|chineseBaseText|messages:" "$I18N_INDEX"
+
+      - name: 8. Build dependencies and editor-ui via Turborepo
         working-directory: n8n-source
         env:
           NODE_OPTIONS: "--max-old-space-size=8192"
@@ -163,21 +218,23 @@ jobs:
 
           echo "| **Turborepo 构建** | 全依赖拓扑编译 (\`n8n-editor-ui\`) | **✅ PASS** |" >> "$GITHUB_WORKSPACE/locale_summary.md"
 
-      - name: 8. Strictly locate and package dist bundle
+      - name: 9. Strictly locate and package dist bundle
         run: |
-          DIST_DIR=$(find n8n-source/packages -type d -path '*/editor-ui/dist' | head -n 1)
+          mapfile -t DIST_DIRS < <(find n8n-source/packages -type d -path '*/editor-ui/dist')
 
-          if [ -z "$DIST_DIR" ]; then
-            echo "::error::Compiled editor-ui/dist directory not found!"
+          if [ "${#DIST_DIRS[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one editor-ui dist directory, but found ${#DIST_DIRS[@]}!"
+            printf '%s\n' "${DIST_DIRS[@]}"
             exit 1
           fi
 
+          DIST_DIR="${DIST_DIRS[0]}"
           PARENT_DIR="$(dirname "$DIST_DIR")"
           echo "Found exact build output at: ${PARENT_DIR}"
 
           tar -czf "$GITHUB_WORKSPACE/editor-ui.tar.gz" -C "$PARENT_DIR" dist
 
-      - name: 9. Publish GitHub Release
+      - name: 10. Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "release/${{ needs.check.outputs.version }}"
