@@ -1,15 +1,66 @@
 name: Build & Release n8n Chinese UI
 
 on:
+  # 1. 定时触发：每 6 小时自动检测一次官方是否有新版本
+  schedule:
+    - cron: '0 */6 * * *'
+
+  # 2. 手动触发：留空版本号则自动构建最新 Stable，也可以手动指定版本
   workflow_dispatch:
     inputs:
       version:
-        description: '目标 n8n 版本号 (例如: 2.33.7 或 2.36.8)'
-        required: true
-        default: '2.33.7'
+        description: '手动指定版本号 (留空则自动检测官方最新 Stable)'
+        required: false
+        default: ''
 
 jobs:
+  # --- 任务一：快速比对与版本决策 (约耗时 3~5 秒) ---
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.version-decision.outputs.should_build }}
+      version: ${{ steps.version-decision.outputs.version }}
+    steps:
+      - name: 确定目标版本与发版状态
+        id: version-decision
+        run: |
+          INPUT_VER="${{ github.event.inputs.version }}"
+          
+          if [ -n "$INPUT_VER" ]; then
+            TARGET_VER="$INPUT_VER"
+            echo "👉 [手动模式] 指定构建版本: ${TARGET_VER}"
+          else
+            echo "🔍 [自动模式] 正在检索官方最新 Stable 版本..."
+            TARGET_VER=$(curl -fsSL "https://api.github.com/repos/n8n-io/n8n/releases/tags/stable" 2>/dev/null \
+              | jq -r '.name // empty' \
+              | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
+              | head -n1 || true)
+            
+            if [ -z "$TARGET_VER" ]; then
+              echo "::error::无法从官方获取 Stable 版本信息！"
+              exit 1
+            fi
+            echo "🎯 检测到官方最新 Stable 版本为: ${TARGET_VER}"
+          fi
+
+          # 检查自己仓库当前是否已经存在此版本的 Release
+          RELEASE_TAG="release/${TARGET_VER}"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "https://api.github.com/repos/${{ github.repository }}/releases/tags/${RELEASE_TAG}")
+
+          # 如果是自动定时触发且已存在，则跳过
+          if [ "$HTTP_CODE" = "200" ] && [ -z "$INPUT_VER" ]; then
+            echo "::notice::版本 v${TARGET_VER} 的汉化补丁已经存在，跳过本次构建任务。"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "🚀 版本 v${TARGET_VER} 准备就绪，开始构建流程..."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            echo "version=${TARGET_VER}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # --- 任务二：仅当需要构建时，才启动完整编译 (约耗时 4 分钟) ---
   build:
+    needs: check
+    if: needs.check.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -20,16 +71,16 @@ jobs:
 
       - name: 2. 严格校验并克隆官方对应版本 Tag
         run: |
-          VERSION="${{ github.event.inputs.version }}"
+          VERSION="${{ needs.check.outputs.version }}"
           TAG="n8n@${VERSION}"
           echo "目标校验 Tag: ${TAG}"
 
           if ! git ls-remote --exit-code --tags https://github.com/n8n-io/n8n.git "refs/tags/${TAG}" >/dev/null 2>&1; then
-            echo "::error::n8n 官方仓库不存在 Tag [${TAG}]，请确认版本号输入正确！"
+            echo "::error::n8n 官方仓库不存在 Tag [${TAG}]！"
             exit 1
           fi
 
-          echo "官方 Tag 验证通过，正在克隆..."
+          echo "官方 Tag 验证通过，克隆源码..."
           git clone --depth 1 --branch "$TAG" https://github.com/n8n-io/n8n.git n8n-source
 
       - name: 3. 解析官方 package.json 提取 Node 与 pnpm 版本
@@ -73,7 +124,7 @@ jobs:
           fi
 
           if [ -z "$ZH_SOURCE" ]; then
-            echo "::error::未在仓库中找到中文语言包文件 (zh-CN.json)！"
+            echo "::error::未在仓库中找到中文语言包文件！"
             exit 1
           fi
 
@@ -83,11 +134,11 @@ jobs:
           elif [ -f "n8n-source/packages/editor-ui/src/plugins/i18n/locales/en.json" ]; then
             TARGET_DIR="n8n-source/packages/editor-ui/src/plugins/i18n/locales"
           else
-            echo "::error::无法识别当前 n8n 版本的多语言目录结构（未找到 en.json）"
+            echo "::error::无法识别当前 n8n 版本的多语言目录结构"
             exit 1
           fi
 
-          echo "发现官方语言目录: ${TARGET_DIR}"
+          echo "发现语言目录: ${TARGET_DIR}，注入中文包..."
           cp "$ZH_SOURCE" "${TARGET_DIR}/zh-CN.json"
           echo "target_dir=${TARGET_DIR}" >> "$GITHUB_OUTPUT"
 
@@ -105,44 +156,36 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
 
-          # 使用 ... 前缀指示 Turbo 优先构建所有前置依赖（如 @n8n/vitest-config, @n8n/i18n）
           if pnpm turbo run build --filter=...n8n-editor-ui; then
-            echo "::notice::Turbo 递归拓扑构建成功"
+            echo "::notice::Turbo 递归构建成功"
           elif pnpm --filter "...n8n-editor-ui" build; then
             echo "::notice::pnpm 递归构建成功"
           elif pnpm turbo run build --filter=...editor-ui; then
             echo "::notice::旧命名递归构建成功"
           else
-            echo "::error::前端及依赖编译失败！"
+            echo "::error::编译失败！"
             exit 1
           fi
 
       - name: 9. 智能定位并打包 dist 产物
         run: |
-          # 动态搜索编译生成的 editor-ui/dist 目录
           DIST_DIR=$(find n8n-source/packages -type d -name "dist" | grep -E "editor-ui/dist$" | head -n1)
-
           if [ -z "$DIST_DIR" ]; then
-            echo "::error::未在 packages 树中找到编译生成的 editor-ui/dist 目录！"
+            echo "::error::未在 packages 树中找到 editor-ui/dist！"
             exit 1
           fi
-
           PARENT_DIR=$(dirname "$DIST_DIR")
-          echo "在 ${PARENT_DIR} 找到构建产物，开始打包 dist..."
-
-          # 使用绝对路径打包到根目录
           tar -czf "$GITHUB_WORKSPACE/editor-ui.tar.gz" -C "$PARENT_DIR" dist
-          ls -lh "$GITHUB_WORKSPACE/editor-ui.tar.gz"
 
       - name: 10. 发布 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "release/${{ github.event.inputs.version }}"
-          name: "n8n v${{ github.event.inputs.version }} 汉化补丁"
+          tag_name: "release/${{ needs.check.outputs.version }}"
+          name: "n8n v${{ needs.check.outputs.version }} 汉化补丁"
           body: |
             ### n8n 汉化补丁产物
-            * **适配引擎版本**：`v${{ github.event.inputs.version }}`
-            * **打包机制**：Turborepo 全依赖拓扑编译 + 多语言门禁校验
+            * **适配引擎版本**：`v${{ needs.check.outputs.version }}`
+            * **构建模式**：自动化定时检测编译 / 依赖拓扑构建
           files: editor-ui.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
