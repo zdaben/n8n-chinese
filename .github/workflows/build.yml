@@ -109,7 +109,7 @@ jobs:
           node --version
           pnpm --version
 
-      - name: 6. Locate i18n directory and validate locale
+      - name: 6. Locate i18n directory, validate and inject locale
         run: |
           ZH_SOURCE=""
           if [ -f "languages/zh-CN.json" ]; then
@@ -123,21 +123,35 @@ jobs:
             exit 1
           fi
 
-          TARGET_DIR=""
+          # 寻找主多语言目录
+          MAIN_I18N_DIR=""
           if [ -f "n8n-source/packages/frontend/@n8n/i18n/src/locales/en.json" ]; then
-            TARGET_DIR="n8n-source/packages/frontend/@n8n/i18n/src/locales"
+            MAIN_I18N_DIR="n8n-source/packages/frontend/@n8n/i18n/src/locales"
           elif [ -f "n8n-source/packages/editor-ui/src/plugins/i18n/locales/en.json" ]; then
-            TARGET_DIR="n8n-source/packages/editor-ui/src/plugins/i18n/locales"
-          else
-            echo "::error::Unable to recognize n8n i18n directory structure"
+            MAIN_I18N_DIR="n8n-source/packages/editor-ui/src/plugins/i18n/locales"
+          fi
+
+          if [ -z "$MAIN_I18N_DIR" ]; then
+            echo "::error::Unable to recognize primary n8n i18n directory structure!"
             exit 1
           fi
 
+          echo "Primary i18n directory: ${MAIN_I18N_DIR}"
+
+          # 运行清洗验证并将安全字典写入主目录
           python3 scripts/validate_locale.py \
-            "${TARGET_DIR}/en.json" \
+            "${MAIN_I18N_DIR}/en.json" \
             "${ZH_SOURCE}" \
-            "${TARGET_DIR}/zh-CN.json" \
+            "${MAIN_I18N_DIR}/zh-CN.json" \
             "$GITHUB_WORKSPACE/locale_summary.md"
+
+          # 全量同步到所有存在的 locales 目录（确保 Vite/editor-ui 打包时 100% 包含中文）
+          find n8n-source/packages -type d -name "locales" | while read -r dir; do
+            if [ -f "${dir}/en.json" ] && [ "$dir" != "$MAIN_I18N_DIR" ]; then
+              echo "Syncing cleaned zh-CN.json to secondary locale directory: ${dir}"
+              cp "${MAIN_I18N_DIR}/zh-CN.json" "${dir}/zh-CN.json"
+            fi
+          done
 
       - name: 7. Build dependencies and editor-ui via Turborepo
         working-directory: n8n-source
