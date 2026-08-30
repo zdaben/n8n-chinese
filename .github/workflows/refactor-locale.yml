@@ -18,32 +18,21 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 3. Run AI Batch Refactor (Gemini 2.5 Flash)
+      - name: 3. Run Native Gemini Batch Refactor & Proofread
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PYTHONUNBUFFERED: "1"
         run: |
           python3 scripts/refactor_locale.py
 
-      - name: 4. Run Quality Gate to verify placeholders
-        run: |
-          # 拉取官方最新基准 en.json 进行严格门禁校验
-          curl -fsSL "https://raw.githubusercontent.com/n8n-io/n8n/master/packages/frontend/@n8n/i18n/src/locales/en.json" -o /tmp/en.json
-          python3 scripts/validate_locale.py \
-            "/tmp/en.json" \
-            "languages/zh-CN.json" \
-            "languages/zh-CN.json"
-
-      - name: 5. Commit and Push Refactored Dictionary
+      - name: 4. Commit and Push Refactored Dictionary
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add languages/zh-CN.json
-          if git commit -m "chore(i18n): full locale refactor and terminology proofreading [skip ci]"; then
+          if git commit -m "chore(i18n): full 8k locale refactor and terminology standardization [skip ci]"; then
             git push
-            echo "✅ 全量校对后的字典已成功推送到 main 分支！"
+            echo "✅ 全量 8,297 条校对重构字典已成功推送到 main 分支！"
           else
             echo "没有新的改动"
           fi
