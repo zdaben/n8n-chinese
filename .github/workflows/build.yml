@@ -38,14 +38,13 @@ jobs:
           NODE_RANGE=$(jq -r '.engines.node // empty' n8n-source/package.json)
           PNPM_SPEC=$(jq -r '.packageManager // empty' n8n-source/package.json)
 
-          # 提取 Node 主版本或指定版本 (例如: >=22.22 -> 22)
           NODE_VERSION=$(echo "$NODE_RANGE" | grep -oE '[0-9]+' | head -n1)
           NODE_VERSION=${NODE_VERSION:-22}
 
           PNPM_VERSION=$(echo "$PNPM_SPEC" | sed 's/^pnpm@//')
           PNPM_VERSION=${PNPM_VERSION:-10.32.1}
 
-          echo "官方要求 Node 主版本: ${NODE_VERSION} | pnpm: ${PNPM_VERSION}"
+          echo "官方要求 Node: ${NODE_VERSION} | pnpm: ${PNPM_VERSION}"
           echo "node_version=${NODE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "pnpm_version=${PNPM_VERSION}" >> "$GITHUB_OUTPUT"
 
@@ -99,18 +98,41 @@ jobs:
             "${TARGET_DIR}/en.json" \
             "${TARGET_DIR}/zh-CN.json"
 
-      - name: 8. 严格构建 n8n-editor-ui (依靠 Turbo 自动处理依赖)
+      - name: 8. 递归构建前置依赖并编译 editor-ui
         working-directory: n8n-source
+        env:
+          NODE_OPTIONS: "--max-old-space-size=8192"
         run: |
           pnpm install --frozen-lockfile
-          # 使用官方标准的 package 名称 n8n-editor-ui
-          pnpm --filter n8n-editor-ui build
 
-      - name: 9. 打包 dist 产物
+          # 使用 ... 前缀指示 Turbo 优先构建所有前置依赖（如 @n8n/vitest-config, @n8n/i18n）
+          if pnpm turbo run build --filter=...n8n-editor-ui; then
+            echo "::notice::Turbo 递归拓扑构建成功"
+          elif pnpm --filter "...n8n-editor-ui" build; then
+            echo "::notice::pnpm 递归构建成功"
+          elif pnpm turbo run build --filter=...editor-ui; then
+            echo "::notice::旧命名递归构建成功"
+          else
+            echo "::error::前端及依赖编译失败！"
+            exit 1
+          fi
+
+      - name: 9. 智能定位并打包 dist 产物
         run: |
-          cd n8n-source/packages/editor-ui
-          tar -czf ../../../editor-ui.tar.gz dist/
-          cd ../../../
+          # 动态搜索编译生成的 editor-ui/dist 目录
+          DIST_DIR=$(find n8n-source/packages -type d -name "dist" | grep -E "editor-ui/dist$" | head -n1)
+
+          if [ -z "$DIST_DIR" ]; then
+            echo "::error::未在 packages 树中找到编译生成的 editor-ui/dist 目录！"
+            exit 1
+          fi
+
+          PARENT_DIR=$(dirname "$DIST_DIR")
+          echo "在 ${PARENT_DIR} 找到构建产物，开始打包 dist..."
+
+          # 使用绝对路径打包到根目录
+          tar -czf "$GITHUB_WORKSPACE/editor-ui.tar.gz" -C "$PARENT_DIR" dist
+          ls -lh "$GITHUB_WORKSPACE/editor-ui.tar.gz"
 
       - name: 10. 发布 GitHub Release
         uses: softprops/action-gh-release@v2
@@ -120,7 +142,7 @@ jobs:
           body: |
             ### n8n 汉化补丁产物
             * **适配引擎版本**：`v${{ github.event.inputs.version }}`
-            * **构建模式**：Turborepo 依赖拓扑构建 + 多语言门禁通过
+            * **打包机制**：Turborepo 全依赖拓扑编译 + 多语言门禁校验
           files: editor-ui.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
