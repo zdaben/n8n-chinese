@@ -24,8 +24,8 @@ def batch_translate_ai(texts_dict, api_key, api_base, model):
     prompt = f"""你是一个专业的前端国际化翻译助手。请将以下 n8n 工作流软件的前端 JSON 英文词条翻译成简体中文。
 要求：
 1. 严禁修改或遗漏任何变量占位符，如 {{time}}、{{name}}、{{count}}、{{0}} 等必须原样保留。
-2. 保持专业术语（Workflow -> 工作流，Node -> 节点，Credential -> 凭据，Execution -> 执行，Canvas -> 画布，Insights -> 洞察与指标）。
-3. 只返回严格合法的 JSON 格式字典，不要输出任何 Markdown 标记或多余文字。
+2. 保持专业术语（Workflow -> 工作流，Node -> 节点，Credentials -> 凭据，Execution -> 执行，Canvas -> 画布，Insights -> 洞察与指标）。
+3. 只返回严格合法的 JSON 格式字典: {{ "key": "翻译后的中文" }}，不要输出任何 Markdown 标记或多余文字。
 
 待翻译 JSON:
 {json.dumps(texts_dict, ensure_ascii=False)}
@@ -68,10 +68,10 @@ def main():
     missing = {k: en_data[k] for k in en_data if k not in zh_data}
 
     print(f"📊 官方有效词条: {len(en_data)} | 本地已有: {len(zh_data)}", flush=True)
-    print(f"🔍 待翻译缺失词条: {len(missing)}", flush=True)
+    print(f"🔍 待补全缺失词条: {len(missing)}", flush=True)
 
     if not missing:
-        print("🎉 恭喜！当前翻译覆盖率已是 100%！", flush=True)
+        print("🎉 恭喜！当前翻译覆盖率已是 100%，无缺失词条！", flush=True)
         return
 
     gemini_key = os.getenv("GEMINI_API_KEY")
@@ -81,9 +81,8 @@ def main():
     if gemini_key:
         api_key = gemini_key
         api_base = "https://generativelanguage.googleapis.com/v1beta/openai"
-        # 使用 Google 官方高可用主力模型 gemini-flash-lite-latest
         model = "gemini-flash-lite-latest"
-        print(f"🌟 使用 Google AI 官方模型: {model}", flush=True)
+        print(f"🌟 使用 Google AI Studio: {model}", flush=True)
     elif deepseek_key:
         api_key = deepseek_key
         api_base = "https://api.deepseek.com/v1"
@@ -98,12 +97,11 @@ def main():
         print("❌ 未检测到任何 API_KEY！", flush=True)
         sys.exit(1)
 
-    # 每批 100 条，兼顾速度与稳定性
     items = list(missing.items())
     batch_size = 100
     total_batches = (len(items) + batch_size - 1) // batch_size
     
-    print(f"🤖 开始分批极速翻译 (共 {total_batches} 批，每批 {batch_size} 条)...", flush=True)
+    print(f"🤖 开始极速增量翻译 (共 {total_batches} 批)...", flush=True)
     success_count = 0
 
     for i in range(0, len(items), batch_size):
@@ -111,13 +109,13 @@ def main():
         batch_idx = i // batch_size + 1
         print(f"  -> [批次 {batch_idx}/{total_batches}] 正在翻译 {len(chunk)} 个词条...", flush=True)
         
-        # 增加 3 次自动重试机制
         for attempt in range(1, 4):
             try:
                 translated_chunk = batch_translate_ai(chunk, api_key, api_base, model)
                 zh_data.update(translated_chunk)
                 success_count += len(translated_chunk)
-                print(f"     ✅ 批次 {batch_idx} 成功翻译 {len(translated_chunk)} 条", flush=True)
+                print(f"     ✅ 批次 {batch_idx} 完成 ({len(translated_chunk)} 条)", flush=True)
+                time.sleep(0.5)
                 break
             except Exception as e:
                 print(f"     ⚠️ 批次 {batch_idx} 第 {attempt} 次重试异常: {e}", flush=True)
@@ -129,7 +127,7 @@ def main():
     with open(ZH_FILE, "w", encoding="utf-8") as f:
         json.dump(zh_data, f, ensure_ascii=False, indent=2)
 
-    print(f"\n💾 字典更新完成！本次成功翻译: {success_count} 条，总有效词条数: {len(zh_data)}", flush=True)
+    print(f"\n💾 字典增量更新完成！本次新增: {success_count} 条，总有效词条数: {len(zh_data)}", flush=True)
 
 if __name__ == "__main__":
     main()
