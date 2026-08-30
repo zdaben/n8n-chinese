@@ -1,0 +1,46 @@
+name: Full Locale Refactor & Proofread
+
+on:
+  workflow_dispatch:
+
+jobs:
+  refactor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: 1. Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 2. Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 3. Run AI Batch Refactor (Gemini 2.0 Flash-Lite)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python3 scripts/refactor_locale.py
+
+      - name: 4. Run Quality Gate to verify placeholders
+        run: |
+          # 校对后立即执行安全门禁，确保没有被 AI 误改占位符
+          python3 scripts/validate_locale.py \
+            "languages/zh-CN.json" \
+            "languages/zh-CN.json" \
+            "languages/zh-CN.json"
+
+      - name: 5. Commit and Push Refactored Dictionary
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add languages/zh-CN.json
+          if git commit -m "chore(i18n): full locale refactor and terminology proofreading [skip ci]"; then
+            git push
+            echo "✅ 全量校对后的字典已成功推送到 main 分支！"
+          else
+            echo "没有新的改动"
+          fi
