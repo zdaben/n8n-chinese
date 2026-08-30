@@ -1,0 +1,38 @@
+name: Run Auto Translate
+
+on:
+  workflow_dispatch:
+
+jobs:
+  translate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Run Auto Translation Script
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python3 scripts/auto_translate.py
+
+      - name: Commit and Push Translated Keys
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add languages/zh-CN.json
+          if git commit -m "chore(i18n): auto-translate missing locale keys [skip ci]"; then
+            git push
+            echo "✅ 字典已自动提交更新并推送至 main 分支！"
+          else
+            echo "没有需要提交的新改动"
+          fi
