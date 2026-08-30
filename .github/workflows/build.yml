@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'n8n 官方版本号 (例如: 2.36.8)'
+        description: '目标 n8n 版本号 (例如: 2.33.7 或 2.36.8)'
         required: true
-        default: '2.36.8'
+        default: '2.33.7'
 
 jobs:
   build:
@@ -15,60 +15,112 @@ jobs:
       contents: write
 
     steps:
-      - name: Checkout 本地汉化字典
+      - name: 1. 检出当前仓库
         uses: actions/checkout@v4
 
-      - name: 安装 Node.js 与 Pnpm
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: 安装 pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 9
-
-      - name: 克隆 n8n 官方对应版本源码
+      - name: 2. 严格校验并克隆官方对应版本 Tag
         run: |
           VERSION="${{ github.event.inputs.version }}"
-          echo "Building n8n editor-ui for version: ${VERSION}"
-          git clone --depth 1 --branch "n8n@${VERSION}" https://github.com/n8n-io/n8n.git n8n-source || \
-          git clone --depth 1 --branch "release/${VERSION}" https://github.com/n8n-io/n8n.git n8n-source || \
-          git clone --depth 1 --branch "v${VERSION}" https://github.com/n8n-io/n8n.git n8n-source
+          TAG="n8n@${VERSION}"
+          echo "目标校验 Tag: ${TAG}"
 
-      - name: 注入中文语言包 (zh-CN.json)
+          if ! git ls-remote --exit-code --tags https://github.com/n8n-io/n8n.git "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::n8n 官方仓库不存在 Tag [${TAG}]，请确认版本号输入正确！"
+            exit 1
+          fi
+
+          echo "官方 Tag 验证通过，正在克隆..."
+          git clone --depth 1 --branch "$TAG" https://github.com/n8n-io/n8n.git n8n-source
+
+      - name: 3. 解析官方 package.json 提取 Node 与 pnpm 版本
+        id: runtime
         run: |
-          # 兼容不同版本 n8n 的语言包目录结构
-          if [ -d "n8n-source/packages/frontend/@n8n/i18n/src/locales" ]; then
-            cp zh-CN.json n8n-source/packages/frontend/@n8n/i18n/src/locales/zh-CN.json
-          fi
-          if [ -d "n8n-source/packages/editor-ui/src/plugins/i18n/locales" ]; then
-            cp zh-CN.json n8n-source/packages/editor-ui/src/plugins/i18n/locales/zh-CN.json
+          NODE_RANGE=$(jq -r '.engines.node // empty' n8n-source/package.json)
+          PNPM_SPEC=$(jq -r '.packageManager // empty' n8n-source/package.json)
+
+          # 提取 Node 主版本或指定版本 (例如: >=22.22 -> 22)
+          NODE_VERSION=$(echo "$NODE_RANGE" | grep -oE '[0-9]+' | head -n1)
+          NODE_VERSION=${NODE_VERSION:-22}
+
+          PNPM_VERSION=$(echo "$PNPM_SPEC" | sed 's/^pnpm@//')
+          PNPM_VERSION=${PNPM_VERSION:-10.32.1}
+
+          echo "官方要求 Node 主版本: ${NODE_VERSION} | pnpm: ${PNPM_VERSION}"
+          echo "node_version=${NODE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "pnpm_version=${PNPM_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: 4. 设置 Node.js 环境
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.runtime.outputs.node_version }}
+
+      - name: 5. 启用并激活官方约束的 pnpm
+        run: |
+          corepack enable
+          corepack prepare "pnpm@${{ steps.runtime.outputs.pnpm_version }}" --activate
+          node --version
+          pnpm --version
+
+      - name: 6. 探测官方语言包路径并注入 zh-CN.json
+        id: locate-i18n
+        run: |
+          ZH_SOURCE=""
+          if [ -f "languages/zh-CN.json" ]; then
+            ZH_SOURCE="languages/zh-CN.json"
+          elif [ -f "locales/zh-CN.json" ]; then
+            ZH_SOURCE="locales/zh-CN.json"
+          elif [ -f "languages/zh.json" ]; then
+            ZH_SOURCE="languages/zh.json"
           fi
 
-      - name: 编译 editor-ui
+          if [ -z "$ZH_SOURCE" ]; then
+            echo "::error::未在仓库中找到中文语言包文件 (zh-CN.json)！"
+            exit 1
+          fi
+
+          TARGET_DIR=""
+          if [ -f "n8n-source/packages/frontend/@n8n/i18n/src/locales/en.json" ]; then
+            TARGET_DIR="n8n-source/packages/frontend/@n8n/i18n/src/locales"
+          elif [ -f "n8n-source/packages/editor-ui/src/plugins/i18n/locales/en.json" ]; then
+            TARGET_DIR="n8n-source/packages/editor-ui/src/plugins/i18n/locales"
+          else
+            echo "::error::无法识别当前 n8n 版本的多语言目录结构（未找到 en.json）"
+            exit 1
+          fi
+
+          echo "发现官方语言目录: ${TARGET_DIR}"
+          cp "$ZH_SOURCE" "${TARGET_DIR}/zh-CN.json"
+          echo "target_dir=${TARGET_DIR}" >> "$GITHUB_OUTPUT"
+
+      - name: 7. 运行门禁校验 (validate_locale.py)
+        run: |
+          TARGET_DIR="${{ steps.locate-i18n.outputs.target_dir }}"
+          python3 scripts/validate_locale.py \
+            "${TARGET_DIR}/en.json" \
+            "${TARGET_DIR}/zh-CN.json"
+
+      - name: 8. 严格构建 n8n-editor-ui (依靠 Turbo 自动处理依赖)
         working-directory: n8n-source
         run: |
-          pnpm install --frozen-lockfile=false
-          # 构建依赖的基础包与前端 UI
-          pnpm --filter @n8n/i18n build || true
-          pnpm --filter editor-ui build
+          pnpm install --frozen-lockfile
+          # 使用官方标准的 package 名称 n8n-editor-ui
+          pnpm --filter n8n-editor-ui build
 
-      - name: 打包 dist 产物
+      - name: 9. 打包 dist 产物
         run: |
           cd n8n-source/packages/editor-ui
           tar -czf ../../../editor-ui.tar.gz dist/
           cd ../../../
 
-      - name: 创建 GitHub Release 并上传
+      - name: 10. 发布 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "release/${{ github.event.inputs.version }}"
           name: "n8n v${{ github.event.inputs.version }} 汉化补丁"
           body: |
-            ### n8n 汉化补丁包
-            - 适配 n8n 官方引擎版本：`v${{ github.event.inputs.version }}`
-            - 构建产物：`editor-ui.tar.gz`
+            ### n8n 汉化补丁产物
+            * **适配引擎版本**：`v${{ github.event.inputs.version }}`
+            * **构建模式**：Turborepo 依赖拓扑构建 + 多语言门禁通过
           files: editor-ui.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
