@@ -1,9 +1,10 @@
 name: Build & Release n8n Localization Package
 
 on:
-  # 1. 定时触发：跟随官方每周节奏，每周三凌晨 03:00 (UTC 时间，即北京时间周三上午 11:00) 自动检测并编译
+  # 1. 定时触发：跟随官方每周节奏，每周三上午 8:12 (北京时间) 自动检测
+  # 避开 00 整点高峰，避免 GitHub 调度队列拥堵排队
   schedule:
-    - cron: '0 3 * * 3'
+    - cron: '12 0 * * 3'
 
   # 2. 保留手动触发：随时支持在网页端按需手动构建
   workflow_dispatch:
@@ -12,6 +13,7 @@ on:
         description: 'Specific n8n version (Leave empty for latest stable)'
         required: false
         default: ''
+
 jobs:
   # --- Job 1: 快速检测官方版本与发版状态 (约 3~5 秒) ---
   check:
@@ -245,8 +247,9 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add languages/zh-CN.json
+          # 使用 HEAD:main 明确目标分支，免疫 Detached HEAD 报错
           if git commit -m "chore(i18n): sync live translated keys for v${{ needs.check.outputs.version }} [skip ci]"; then
-            git push
+            git push origin HEAD:main
             echo "✅ 现场翻译的新增词条已自动回写推送到 main 分支！"
           else
             echo "没有需要提交的新增词条"
