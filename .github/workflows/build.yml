@@ -1,18 +1,17 @@
 name: Build & Release n8n Localization Package
 
 on:
-  # 1. 定时触发：每周日 早上 08:00检测官方最新发版
+  # 1. 定时触发：跟随官方每周节奏，每周三凌晨 03:00 (UTC 时间，即北京时间周三上午 11:00) 自动检测并编译
   schedule:
-    - cron: '0 0 * * 0'
+    - cron: '0 3 * * 3'
 
-  # 2. 手动触发：留空版本号则自动构建最新 Stable，也可以手动指定特定版本
+  # 2. 保留手动触发：随时支持在网页端按需手动构建
   workflow_dispatch:
     inputs:
       version:
         description: 'Specific n8n version (Leave empty for latest stable)'
         required: false
         default: ''
-
 jobs:
   # --- Job 1: 快速检测官方版本与发版状态 (约 3~5 秒) ---
   check:
