@@ -8466,5 +8466,10 @@
   "promotions.modal.promoteError": "更改升级失败",
   "promotions.banner.changesAvailable": "有 {count} 项更改可供升级。",
   "promotions.banner.singleChangeAvailable": "有 1 项更改可供升级。",
-  "promotions.banner.viewChanges": "查看更改"
+  "promotions.banner.viewChanges": "查看更改",
+  "workflowHistory.action.unpublish.modal.affected": "以下资源正在使用此工作流，在您重新发布之前将停止工作：",
+  "settings.ai.confirm.message": "禁用数据发送会降低 AI 功能的效果。确定要继续吗？",
+  "projects.header.create.agentManually": "手动创建智能体",
+  "instanceAi.setupPanel.executeMessage": "运行此工作流的测试执行。",
+  "instanceAi.tasks.untitled": "未命名任务"
 }
