@@ -1,10 +1,10 @@
 name: Build & Release n8n Localization Package
 
 on:
-  # 1. 定时触发：跟随官方每周节奏，每周三上午 8:12 (北京时间) 自动检测
+  # 1. 定时触发：跟随官方每周节奏，每周日上午 8:12 (北京时间) 自动检测
   # 避开 00 整点高峰，避免 GitHub 调度队列拥堵排队
   schedule:
-    - cron: '12 0 * * 3'
+    - cron: '12 0 * * 0'
 
   # 2. 保留手动触发：随时支持在网页端按需手动构建
   workflow_dispatch:
